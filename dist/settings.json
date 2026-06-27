@@ -1,0 +1,170 @@
+{
+    "theme": "Minimalist",
+    "character": "Miku",
+    "character_p2": "Pikachu",
+    "character_p3": "Beat Bot",
+    "character_p4": "Beat Bot",
+    "game_mode": "Solo",
+    "players": 1,
+    "show_console": false,
+    "music_volume": 0.8,
+    "sfx_volume": 0.40000000000000013,
+    "device_p1": "Keyboard",
+    "device_p2": "Keyboard",
+    "device_p3": "Gamepad",
+    "device_p4": "Gamepad",
+    "microphone_p1": 6,
+    "microphone_p2": -1,
+    "microphone_p3": -1,
+    "microphone_p4": -1,
+    "keys_p1": {
+        "left": 97,
+        "down": 115,
+        "up": 119,
+        "right": 100
+    },
+    "keys_p2": {
+        "left": 1073741904,
+        "down": 1073741905,
+        "up": 1073741906,
+        "right": 1073741903
+    },
+    "keys_p3": {
+        "left": 105,
+        "down": 107,
+        "up": 111,
+        "right": 108
+    },
+    "keys_p4": {
+        "left": 1073741916,
+        "down": 1073741917,
+        "up": 1073741920,
+        "right": 1073741918
+    },
+    "guitar_keys_p1": {
+        "green": 97,
+        "red": 115,
+        "yellow": 100,
+        "blue": 102,
+        "orange": 103,
+        "strum": 32,
+        "whammy": 1073742049,
+        "tilt": 308
+    },
+    "guitar_keys_p2": {
+        "green": 104,
+        "red": 106,
+        "yellow": 107,
+        "blue": 108,
+        "orange": 59,
+        "strum": 13,
+        "whammy": 305,
+        "tilt": 307
+    },
+    "guitar_keys_p3": {
+        "green": 105,
+        "red": 111,
+        "yellow": 112,
+        "blue": 91,
+        "orange": 93,
+        "strum": 305,
+        "whammy": 308,
+        "tilt": 306
+    },
+    "guitar_keys_p4": {
+        "green": 1073741913,
+        "red": 1073741914,
+        "yellow": 1073741915,
+        "blue": 1073741916,
+        "orange": 1073741917,
+        "strum": 1073741922,
+        "whammy": 307,
+        "tilt": 305
+    },
+    "gamepad": {
+        "enabled": true,
+        "left": 13,
+        "down": 14,
+        "up": 11,
+        "right": 12,
+        "is_axis": false
+    },
+    "gamepad_p1": {
+        "left": {
+            "type": "button",
+            "id": 2
+        },
+        "down": {
+            "type": "button",
+            "id": 0
+        },
+        "up": {
+            "type": "button",
+            "id": 3
+        },
+        "right": {
+            "type": "button",
+            "id": 1
+        }
+    },
+    "gamepad_p2": {
+        "left": {
+            "type": "button",
+            "id": 2
+        },
+        "down": {
+            "type": "button",
+            "id": 0
+        },
+        "up": {
+            "type": "button",
+            "id": 3
+        },
+        "right": {
+            "type": "button",
+            "id": 1
+        }
+    },
+    "gamepad_p3": {
+        "left": {
+            "type": "button",
+            "id": 2
+        },
+        "down": {
+            "type": "button",
+            "id": 0
+        },
+        "up": {
+            "type": "button",
+            "id": 3
+        },
+        "right": {
+            "type": "button",
+            "id": 1
+        }
+    },
+    "gamepad_p4": {
+        "left": {
+            "type": "button",
+            "id": 2
+        },
+        "down": {
+            "type": "button",
+            "id": 0
+        },
+        "up": {
+            "type": "button",
+            "id": 3
+        },
+        "right": {
+            "type": "button",
+            "id": 1
+        }
+    },
+    "keys": {
+        "left": 1073741904,
+        "down": 1073741905,
+        "up": 1073741906,
+        "right": 1073741903
+    }
+}

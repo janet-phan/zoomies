@@ -1,0 +1,19 @@
+{
+    "theme": "DDR-Retro",
+    "music_volume": 0.8,
+    "sfx_volume": 0.7,
+    "keys": {
+        "left": 1073741904,
+        "down": 1073741905,
+        "up": 1073741906,
+        "right": 1073741903
+    },
+    "gamepad": {
+        "enabled": true,
+        "left": 13,
+        "down": 14,
+        "up": 11,
+        "right": 12,
+        "is_axis": false
+    }
+}
