@@ -197,31 +197,84 @@ def get_or_create_speed_audio(original_filename, speed_multiplier):
         return original_filename
 
 class Particle:
-    def __init__(self, x, y, color):
+    def __init__(self, x, y, color, p_type="circle"):
         self.x = x
         self.y = y
-        angle = random.uniform(0, 2 * math.pi)
-        speed = random.uniform(2, 6)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.radius = random.uniform(4, 9)
-        self.alpha = 255.0
-        self.decay = random.uniform(10, 20)
+        self.p_type = p_type
         self.color = color
+        self.alpha = 255.0
+        
+        if p_type == "ring":
+            self.radius = 10.0
+            self.max_radius = 60.0
+            self.vx = 0
+            self.vy = 0
+            self.decay = 8.0 # slower decay for rings
+            self.width = 4
+        elif p_type == "star":
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(3, 8)
+            self.vx = math.cos(angle) * speed
+            self.vy = math.sin(angle) * speed
+            self.radius = random.uniform(6, 12)
+            self.decay = random.uniform(8, 15)
+            self.rotation = random.uniform(0, 360)
+            self.rot_speed = random.uniform(-10, 10)
+        else:
+            angle = random.uniform(0, 2 * math.pi)
+            speed = random.uniform(2, 6)
+            self.vx = math.cos(angle) * speed
+            self.vy = math.sin(angle) * speed
+            self.radius = random.uniform(4, 9)
+            self.decay = random.uniform(10, 20)
 
     def update(self):
-        self.x += self.vx
-        self.y += self.vy
-        self.alpha = max(0, self.alpha - self.decay)
-        self.radius = max(0.5, self.radius - 0.1)
+        if self.p_type == "ring":
+            self.radius += 3.5 # Expand outward fast
+            self.alpha = max(0, self.alpha - self.decay)
+            self.width = max(1, int(4 * (self.alpha / 255.0)))
+        elif self.p_type == "star":
+            self.x += self.vx
+            self.y += self.vy
+            self.rotation += self.rot_speed
+            self.alpha = max(0, self.alpha - self.decay)
+            self.radius = max(0.5, self.radius - 0.15)
+        else:
+            self.x += self.vx
+            self.y += self.vy
+            self.alpha = max(0, self.alpha - self.decay)
+            self.radius = max(0.5, self.radius - 0.1)
 
     def draw(self, surface):
         if self.alpha <= 0:
             return
-        s = pygame.Surface((int(self.radius * 2), int(self.radius * 2)), pygame.SRCALPHA)
-        color = (self.color[0], self.color[1], self.color[2], int(self.alpha))
-        pygame.draw.circle(s, color, (int(self.radius), int(self.radius)), int(self.radius))
-        surface.blit(s, (int(self.x - self.radius), int(self.y - self.radius)))
+        if self.p_type == "ring":
+            s = pygame.Surface((int(self.radius * 2) + 10, int(self.radius * 2) + 10), pygame.SRCALPHA)
+            color = (self.color[0], self.color[1], self.color[2], int(self.alpha))
+            cx = s.get_width() // 2
+            cy = s.get_height() // 2
+            pygame.draw.circle(s, color, (cx, cy), int(self.radius), self.width)
+            surface.blit(s, (int(self.x - cx), int(self.y - cy)))
+        elif self.p_type == "star":
+            s = pygame.Surface((int(self.radius * 2) + 4, int(self.radius * 2) + 4), pygame.SRCALPHA)
+            color = (self.color[0], self.color[1], self.color[2], int(self.alpha))
+            cx = s.get_width() // 2
+            cy = s.get_height() // 2
+            r = self.radius
+            angle_rad = math.radians(self.rotation)
+            pts = []
+            for i in range(4):
+                a = angle_rad + i * (math.pi / 2)
+                pts.append((cx + math.cos(a) * r, cy + math.sin(a) * r))
+                a_inner = a + (math.pi / 4)
+                pts.append((cx + math.cos(a_inner) * r * 0.3, cy + math.sin(a_inner) * r * 0.3))
+            pygame.draw.polygon(s, color, pts)
+            surface.blit(s, (int(self.x - cx), int(self.y - cy)))
+        else:
+            s = pygame.Surface((int(self.radius * 2) + 2, int(self.radius * 2) + 2), pygame.SRCALPHA)
+            color = (self.color[0], self.color[1], self.color[2], int(self.alpha))
+            pygame.draw.circle(s, color, (s.get_width()//2, s.get_height()//2), int(self.radius))
+            surface.blit(s, (int(self.x - s.get_width()//2), int(self.y - s.get_height()//2)))
 
 class PlayerState:
     def __init__(self, chart, lane_x, character_name, player_idx, bpm, difficulty, is_dynamic):
@@ -352,6 +405,64 @@ class PlayerState:
         self.judgment_flash_timer = 1.0
 
 class Gameplay:
+    def get_note_rhythm_color(self, note_time, bpm):
+        if bpm <= 0:
+            return None
+        beat_pos = note_time * (bpm / 60.0)
+        fraction = beat_pos % 1.0
+        
+        # Priority-based matching with moderate tolerance (0.035 beats) for float drift and legacy charts
+        tol = 0.035
+        if fraction < tol or fraction > (1.0 - tol):
+            return (255, 60, 60) # 4th: Red
+        if abs(fraction - 0.5) < tol:
+            return (60, 100, 255) # 8th: Blue
+        if min(abs(fraction - 0.25), abs(fraction - 0.75)) < tol:
+            return (255, 230, 50) # 16th: Yellow
+        if min(abs(fraction - 1/3), abs(fraction - 2/3)) < tol:
+            return (180, 50, 255) # 12th: Purple
+        if min(abs(fraction - 1/6), abs(fraction - 5/6)) < tol:
+            return (255, 60, 180) # 24th: Magenta
+        if min(abs(fraction - 0.125), abs(fraction - 0.375), abs(fraction - 0.625), abs(fraction - 0.875)) < tol:
+            return (255, 128, 0) # 32nd: Orange
+            
+        for sixteenth in [1/16, 3/16, 5/16, 7/16, 9/16, 11/16, 13/16, 15/16]:
+            if abs(fraction - sixteenth) < tol:
+                return (50, 220, 100) # 64th: Green
+                
+        return None
+
+    def spawn_hit_particles(self, x, y, lane, rating):
+        # 1. Shockwave rings and star bursts based on hit accuracy
+        if rating == "PERFECT":
+            # Cyan expanding shockwave + gold stars + cyan circles
+            self.particles.append(Particle(x, y, (0, 255, 204), p_type="ring"))
+            for _ in range(8):
+                self.particles.append(Particle(x, y, (255, 223, 0), p_type="star"))
+            for _ in range(12):
+                self.particles.append(Particle(x, y, (0, 255, 204), p_type="circle"))
+        elif rating == "GREAT":
+            # Gold expanding shockwave + gold stars + white circles
+            self.particles.append(Particle(x, y, (255, 215, 0), p_type="ring"))
+            for _ in range(6):
+                self.particles.append(Particle(x, y, (255, 215, 0), p_type="star"))
+            for _ in range(8):
+                self.particles.append(Particle(x, y, (255, 255, 255), p_type="circle"))
+        elif rating == "GOOD":
+            # Soft green expanding shockwave + green circles
+            self.particles.append(Particle(x, y, (50, 205, 50), p_type="ring"))
+            for _ in range(6):
+                self.particles.append(Particle(x, y, (50, 205, 50), p_type="circle"))
+        else:
+            # Fallback for OK or other judgments (uses theme lane color)
+            from config import settings
+            from theme_manager import ThemeManager
+            # Inline temp ThemeManager instance to read lane color
+            tm = ThemeManager()
+            p_color = tm.get_lane_color(lane, settings.theme)
+            for _ in range(8):
+                self.particles.append(Particle(x, y, p_color, p_type="circle"))
+
     def __init__(self, song_metadata, difficulty, character_name="Miku"):
         self.metadata = song_metadata
         self.difficulty = difficulty
@@ -642,9 +753,7 @@ class Gameplay:
             for lane in held_lanes:
                 x = p.lane_x[lane]
                 y = self.receptor_y
-                p_color = theme_manager.get_lane_color(lane, settings.theme)
-                for _ in range(10):
-                    self.particles.append(Particle(x, y, p_color))
+                self.spawn_hit_particles(x, y, lane, rating)
             p.trigger_judgment(rating, color)
         else:
             p.set_char_state("umm", 0.8)
@@ -707,9 +816,7 @@ class Gameplay:
                 # Spawn particles
                 x = p.lane_x[direction_idx]
                 y = self.receptor_y
-                particle_color = theme_manager.get_lane_color(direction_idx, settings.theme)
-                for _ in range(12):
-                    self.particles.append(Particle(x, y, particle_color))
+                self.spawn_hit_particles(x, y, direction_idx, rating)
                     
                 p.trigger_judgment(rating, color)
                 
@@ -1224,9 +1331,15 @@ class Gameplay:
                         y = self.receptor_y - int(t_diff * self.scroll_speed)
                         
                     if 0 <= y <= SCREEN_HEIGHT:
+                        # Determine rhythm color if not Guitar Hero mode
+                        if settings.game_mode == "Guitar Hero":
+                            n_col = None
+                        else:
+                            n_col = self.get_note_rhythm_color(note["time"], self.bpm)
+                            
                         for lane in note["lanes"]:
                             lx = p.lane_x[lane]
-                            theme_manager.draw_arrow(surface, lx, y, lane, theme, scale=self.lane_width/80.0, is_receptor=False)
+                            theme_manager.draw_arrow(surface, lx, y, lane, theme, scale=self.lane_width/80.0, is_receptor=False, note_color=n_col)
                                 
             # Floating Judgment
             if p.last_judgment and p.judgment_flash_timer > 0:

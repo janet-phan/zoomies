@@ -190,8 +190,11 @@ class ThemeManager:
             pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
         pygame.draw.polygon(surface, color, pts, width)
 
-    def draw_arrow(self, surface, x, y, direction, theme, scale=1.0, is_receptor=False, active_pulse=0.0):
-        lane_color = self.get_lane_color(direction, theme)
+    def draw_arrow(self, surface, x, y, direction, theme, scale=1.0, is_receptor=False, active_pulse=0.0, note_color=None):
+        if not is_receptor and note_color is not None:
+            lane_color = note_color
+        else:
+            lane_color = self.get_lane_color(direction, theme)
         pulse_scale = 1.0 + (0.15 * active_pulse)
         scale *= pulse_scale
         size = int(24 * scale)
@@ -200,7 +203,7 @@ class ThemeManager:
         if theme == "Retro-Pixel":
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else (60, 50, 80)
+                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.45)) for c in lane_color)
                 pygame.draw.polygon(surface, col, points, width=3)
             else:
                 pygame.draw.polygon(surface, lane_color, points)
@@ -210,7 +213,7 @@ class ThemeManager:
         elif theme == "Futuristic":
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else (0, 180, 150)
+                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.6)) for c in lane_color)
                 pygame.draw.polygon(surface, col, points, width=3)
             else:
                 pygame.draw.polygon(surface, lane_color, points)
@@ -222,7 +225,7 @@ class ThemeManager:
         elif theme == "Kawaii-Pink":
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                col = (255, 105, 180) if active_pulse > 0 else (255, 180, 210)
+                col = (255, 105, 180) if active_pulse > 0 else tuple(max(0, int(c * 0.8)) for c in lane_color)
                 pygame.draw.polygon(surface, col, points, width=3)
             else:
                 pygame.draw.polygon(surface, lane_color, points)
@@ -232,7 +235,7 @@ class ThemeManager:
         elif theme == "Neko-Pixel":
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else (120, 90, 140)
+                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.55)) for c in lane_color)
                 pygame.draw.polygon(surface, col, points, width=3)
             else:
                 pygame.draw.polygon(surface, lane_color, points)
@@ -270,7 +273,7 @@ class ThemeManager:
         elif theme == "DDR-Retro":
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                outline_color = (255, 255, 255) if active_pulse > 0 else (100, 80, 120)
+                outline_color = (255, 255, 255) if active_pulse > 0 else lane_color
                 glow_points = self.get_arrow_points(direction, x, y, scale * 1.05)
                 pygame.draw.polygon(surface, lane_color, glow_points, width=2)
                 pygame.draw.polygon(surface, outline_color, points, width=3)
@@ -283,11 +286,11 @@ class ThemeManager:
             # Minimalist Theme
             points = self.get_arrow_points(direction, x, y, scale)
             if is_receptor:
-                color = self.get_accent_color("Minimalist") if active_pulse > 0 else (200, 200, 205)
+                color = self.get_accent_color("Minimalist") if active_pulse > 0 else tuple(max(0, int(c * 0.85)) for c in lane_color)
                 pygame.draw.polygon(surface, color, points, width=2)
                 pygame.draw.circle(surface, color, (int(x), int(y)), int(4 * scale))
             else:
-                color = self.get_lane_color(direction, theme)
+                color = lane_color
                 pygame.draw.polygon(surface, color, points)
 
     def draw_background_grid(self, surface, theme, beat_progress=0.0):

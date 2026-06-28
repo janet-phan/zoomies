@@ -56,68 +56,68 @@ DEFAULT_SETTINGS = {
     "microphone_p3": -1,
     "microphone_p4": -1,
     "keys_p1": {
-        "left": 97,          # A
-        "down": 115,         # S
-        "up": 119,           # W
-        "right": 100,        # D
+        "left": [97, 1073741904],          # A, Left Arrow
+        "down": [115, 1073741905],         # S, Down Arrow
+        "up": [119, 1073741906],           # W, Up Arrow
+        "right": [100, 1073741903],        # D, Right Arrow
     },
     "keys_p2": {
-        "left": 1073741904,  # Left Arrow
-        "down": 1073741905,  # Down Arrow
-        "up": 1073741906,    # Up Arrow
-        "right": 1073741903, # Right Arrow
+        "left": [1073741904, 0],  # Left Arrow, Unassigned
+        "down": [1073741905, 0],  # Down Arrow, Unassigned
+        "up": [1073741906, 0],    # Up Arrow, Unassigned
+        "right": [1073741903, 0], # Right Arrow, Unassigned
     },
     "keys_p3": {
-        "left": 105,         # I
-        "down": 107,         # K
-        "up": 111,           # O
-        "right": 108,        # L
+        "left": [105, 0],         # I, Unassigned
+        "down": [107, 0],         # K, Unassigned
+        "up": [111, 0],           # O, Unassigned
+        "right": [108, 0],        # L, Unassigned
     },
     "keys_p4": {
-        "left": 1073741916,  # Numpad 4
-        "down": 1073741917,  # Numpad 5
-        "up": 1073741920,    # Numpad 8
-        "right": 1073741918, # Numpad 6
+        "left": [1073741916, 0],  # Numpad 4, Unassigned
+        "down": [1073741917, 0],  # Numpad 5, Unassigned
+        "up": [1073741920, 0],    # Numpad 8, Unassigned
+        "right": [1073741918, 0], # Numpad 6, Unassigned
     },
     "guitar_keys_p1": {
-        "green": 97,
-        "red": 115,
-        "yellow": 100,
-        "blue": 102,
-        "orange": 103,
-        "strum": 32,
-        "whammy": 306,
-        "tilt": 308
+        "green": [97, 0],
+        "red": [115, 0],
+        "yellow": [100, 0],
+        "blue": [102, 0],
+        "orange": [103, 0],
+        "strum": [32, 0],
+        "whammy": [306, 0],
+        "tilt": [308, 0]
     },
     "guitar_keys_p2": {
-        "green": 104,
-        "red": 106,
-        "yellow": 107,
-        "blue": 108,
-        "orange": 59,
-        "strum": 13,
-        "whammy": 305,
-        "tilt": 307
+        "green": [104, 0],
+        "red": [106, 0],
+        "yellow": [107, 0],
+        "blue": [108, 0],
+        "orange": [59, 0],
+        "strum": [13, 0],
+        "whammy": [305, 0],
+        "tilt": [307, 0]
     },
     "guitar_keys_p3": {
-        "green": 105,        # I
-        "red": 111,          # O
-        "yellow": 112,       # P
-        "blue": 91,          # [
-        "orange": 93,          # ]
-        "strum": 305,         # RCTRL
-        "whammy": 308,         # LALT
-        "tilt": 306
+        "green": [105, 0],        # I
+        "red": [111, 0],          # O
+        "yellow": [112, 0],       # P
+        "blue": [91, 0],          # [
+        "orange": [93, 0],          # ]
+        "strum": [305, 0],         # RCTRL
+        "whammy": [308, 0],         # LALT
+        "tilt": [306, 0]
     },
     "guitar_keys_p4": {
-        "green": 1073741913,  # Numpad 1
-        "red": 1073741914,    # Numpad 2
-        "yellow": 1073741915,  # Numpad 3
-        "blue": 1073741916,    # Numpad 4
-        "orange": 1073741917,  # Numpad 5
-        "strum": 1073741922,   # Numpad Enter
-        "whammy": 307,          # RALT
-        "tilt": 305
+        "green": [1073741913, 0],  # Numpad 1
+        "red": [1073741914, 0],    # Numpad 2
+        "yellow": [1073741915, 0],  # Numpad 3
+        "blue": [1073741916, 0],    # Numpad 4
+        "orange": [1073741917, 0],  # Numpad 5
+        "strum": [1073741922, 0],   # Numpad Enter
+        "whammy": [307, 0],          # RALT
+        "tilt": [305, 0]
     },
     "gamepad": {
         "enabled": True,
@@ -177,6 +177,21 @@ class Settings:
                             self.data[k].update(v)
                         else:
                             self.data[k] = v
+                    
+                    # Ensure keys_p1 to keys_p4 are upgraded to list format [Set1, Set2]
+                    for p in [1, 2, 3, 4]:
+                        k_key = f"keys_p{p}"
+                        if k_key in self.data:
+                            for dir_name in ["left", "down", "up", "right"]:
+                                val = self.data[k_key].get(dir_name)
+                                if val is not None and not isinstance(val, list):
+                                    self.data[k_key][dir_name] = [val, 0]
+                        g_key = f"guitar_keys_p{p}"
+                        if g_key in self.data:
+                            for fret_name in ["green", "red", "yellow", "blue", "orange", "strum", "whammy", "tilt"]:
+                                val = self.data[g_key].get(fret_name)
+                                if val is not None and not isinstance(val, list):
+                                    self.data[g_key][fret_name] = [val, 0]
             except Exception as e:
                 print(f"Error loading settings: {e}")
                 self.data = DEFAULT_SETTINGS.copy()

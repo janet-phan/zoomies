@@ -71,7 +71,15 @@ class InputManager:
             is_down = (event.type == pygame.KEYDOWN)
             key_id = event.key
             for dir_name, mapped_key in settings.keys.items():
-                if key_id == mapped_key:
+                matched = False
+                if isinstance(mapped_key, list):
+                    if key_id in mapped_key:
+                        matched = True
+                else:
+                    if key_id == mapped_key:
+                        matched = True
+                
+                if matched:
                     self.key_states[dir_name] = is_down
                     # Describe key
                     key_name = pygame.key.name(key_id).upper()

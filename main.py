@@ -400,37 +400,55 @@ class App:
                         if device in ["Keyboard", "Guitar"]:
                             if settings.game_mode == "Guitar Hero":
                                 guitar_keys = getattr(settings, f"guitar_keys_p{p_num}", {})
-                                f_map = {}
+                                # Check frets
                                 for fret_name, fret_idx in [("green", 0), ("red", 1), ("yellow", 2), ("blue", 3), ("orange", 4)]:
                                     val = guitar_keys.get(fret_name)
-                                    if isinstance(val, int):
-                                        f_map[val] = fret_idx
-                                        
-                                if key in f_map:
-                                    self.gameplay.trigger_fret(p_idx, f_map[key], is_down)
-                                    
+                                    if isinstance(val, list):
+                                        if key in val:
+                                            self.gameplay.trigger_fret(p_idx, fret_idx, is_down)
+                                    else:
+                                        if key == val:
+                                            self.gameplay.trigger_fret(p_idx, fret_idx, is_down)
+                                            
+                                # Check strum
                                 val_strum = guitar_keys.get("strum")
-                                if isinstance(val_strum, int) and key == val_strum and is_down:
-                                    self.gameplay.trigger_strum(p_idx)
-                                    
+                                if isinstance(val_strum, list):
+                                    if key in val_strum and is_down:
+                                        self.gameplay.trigger_strum(p_idx)
+                                elif isinstance(val_strum, int):
+                                    if key == val_strum and is_down:
+                                        self.gameplay.trigger_strum(p_idx)
+                                        
+                                # Check whammy
                                 val_whammy = guitar_keys.get("whammy")
-                                if isinstance(val_whammy, int) and key == val_whammy:
-                                    self.gameplay.trigger_whammy(p_idx, is_down)
-                                    
+                                if isinstance(val_whammy, list):
+                                    if key in val_whammy:
+                                        self.gameplay.trigger_whammy(p_idx, is_down)
+                                elif isinstance(val_whammy, int):
+                                    if key == val_whammy:
+                                        self.gameplay.trigger_whammy(p_idx, is_down)
+                                        
+                                # Check tilt
                                 val_tilt = guitar_keys.get("tilt")
-                                if isinstance(val_tilt, int) and key == val_tilt:
-                                    self.gameplay.trigger_tilt(p_idx, is_down)
+                                if isinstance(val_tilt, list):
+                                    if key in val_tilt:
+                                        self.gameplay.trigger_tilt(p_idx, is_down)
+                                elif isinstance(val_tilt, int):
+                                    if key == val_tilt:
+                                        self.gameplay.trigger_tilt(p_idx, is_down)
                             else:
                                 # DDR/FNF/Karaoke modes
                                 p_keys = getattr(settings, f"keys_p{p_num}", {})
-                                k_map = {
-                                    p_keys.get("left"): 0,
-                                    p_keys.get("down"): 1,
-                                    p_keys.get("up"): 2,
-                                    p_keys.get("right"): 3
-                                }
-                                if key in k_map:
-                                    self.gameplay.trigger_input(k_map[key], is_down, p_idx)
+                                for dir_idx, dir_name in enumerate(["left", "down", "up", "right"]):
+                                    mapped_val = p_keys.get(dir_name)
+                                    if isinstance(mapped_val, list):
+                                        if key in mapped_val:
+                                            self.gameplay.trigger_input(dir_idx, is_down, p_idx)
+                                            break
+                                    else:
+                                        if key == mapped_val:
+                                            self.gameplay.trigger_input(dir_idx, is_down, p_idx)
+                                            break
                                     
                 elif event.type in [pygame.JOYBUTTONDOWN, pygame.JOYBUTTONUP]:
                     is_down = (event.type == pygame.JOYBUTTONDOWN)
@@ -569,9 +587,48 @@ class App:
             # --- REMAP STATE EVENT HANDLING ---
             if self.state == "REMAP":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    if getattr(self, "active_remap_cell", None) is not None:
+                        input_manager.cancel_remap()
+                        self.active_remap_cell = None
+                        sound_helper.play_back()
+                    else:
+                        input_manager.cancel_remap()
+                        sound_helper.play_back()
+                        self.state = "SETTINGS"
+                    continue
+                
+                # Clear keybind if DELETE or BACKSPACE is pressed during active cell remap
+                if getattr(self, "active_remap_cell", None) is not None and event.type == pygame.KEYDOWN and event.key in [pygame.K_DELETE, pygame.K_BACKSPACE]:
                     input_manager.cancel_remap()
-                    sound_helper.play_back()
-                    self.state = "SETTINGS"
+                    direction, set_idx = self.active_remap_cell
+                    p_num = int(self.remap_mode[1])
+                    
+                    if "gamepad" in self.remap_mode:
+                        prop_name = f"gamepad_p{p_num}"
+                        new_gp = getattr(settings, prop_name).copy()
+                        new_gp[direction] = {} # Clear gamepad binding
+                        setattr(settings, prop_name, new_gp)
+                    elif "guitar" in self.remap_mode:
+                        prop_name = f"guitar_keys_p{p_num}"
+                        new_keys = getattr(settings, prop_name).copy()
+                        if isinstance(new_keys[direction], list):
+                            new_keys[direction][set_idx] = 0
+                        else:
+                            new_keys[direction] = [0, 0]
+                        setattr(settings, prop_name, new_keys)
+                    else:
+                        prop_name = f"keys_p{p_num}"
+                        new_keys = getattr(settings, prop_name).copy()
+                        if isinstance(new_keys[direction], list):
+                            new_keys[direction][set_idx] = 0
+                        else:
+                            new_keys[direction] = [0, 0]
+                        setattr(settings, prop_name, new_keys)
+                        
+                    self.active_remap_cell = None
+                    sound_helper.play_select()
+                    continue
+                
                 continue
 
             # --- SONG SELECT QUICK EDITOR SHORTCUT ---
@@ -768,6 +825,49 @@ class App:
 
     def is_dark_theme(self, theme):
         return theme in ["DDR-Retro", "Retro-Pixel", "Futuristic", "Neko-Pixel", "Guitar-Hero"]
+
+    def get_key_name_str(self, key_val):
+        if not key_val or key_val == 0:
+            return "---"
+        if isinstance(key_val, dict):
+            t = key_val.get("type")
+            if t == "button":
+                return f"BTN {key_val.get('id')}"
+            elif t == "hat":
+                val = key_val.get("value")
+                dir_desc = "LEFT" if val[0] < 0 else "RIGHT" if val[0] > 0 else "DOWN" if val[1] < 0 else "UP"
+                return f"DPAD {dir_desc}"
+            elif t == "axis":
+                return f"AXIS {key_val.get('axis_idx')}{'+' if key_val.get('sign', 1) > 0 else '-'}"
+            return "BIND"
+        
+        name = pygame.key.name(key_val).upper()
+        replacements = {
+            "LEFT ARROW": "LEFT",
+            "RIGHT ARROW": "RIGHT",
+            "UP ARROW": "UP",
+            "DOWN ARROW": "DOWN",
+            "LEFT SUPER": "LWIN",
+            "RIGHT SUPER": "RWIN",
+            "LEFT CTRL": "LCTRL",
+            "RIGHT CTRL": "RCTRL",
+            "LEFT SHIFT": "LSHIFT",
+            "RIGHT SHIFT": "RSHIFT",
+            "LEFT ALT": "LALT",
+            "RIGHT ALT": "RALT",
+            "CAPS LOCK": "CAPS",
+            "PAGE UP": "PGUP",
+            "PAGE DOWN": "PGDN",
+            "KEYPAD 4": "NUM 4",
+            "KEYPAD 5": "NUM 5",
+            "KEYPAD 6": "NUM 6",
+            "KEYPAD 8": "NUM 8",
+            "KEYPAD ENTER": "NUM ENTER",
+        }
+        for k, v in replacements.items():
+            if k in name:
+                name = name.replace(k, v)
+        return name
 
     def update_difficulties_list(self):
         if not self.songs_list or self.song_index >= len(self.songs_list):
@@ -1226,27 +1326,83 @@ class App:
     def start_key_remapping(self, mode):
         self.state = "REMAP"
         self.remap_mode = mode  # "p1_ddr", "p2_ddr", "p3_ddr", "p4_ddr", "p1_guitar", "p2_guitar", ...
-        self.remap_step = 0
+        self.active_remap_cell = None
+        self.remap_hover_cell = None
         if "guitar" in mode:
-            self.remap_directions = ["green", "red", "yellow", "blue", "orange", "strum", "whammy", "tilt"]
-        elif settings.game_mode == "Guitar Hero":
             self.remap_directions = ["green", "red", "yellow", "blue", "orange", "strum", "whammy", "tilt"]
         else:
             self.remap_directions = ["left", "down", "up", "right"]
-            
-        self.remap_target_dir = self.remap_directions[self.remap_step]
-        if "guitar" in mode:
-            target_device = "guitar fret / keyboard key"
-        elif "gamepad" in mode:
-            target_device = "gamepad button/D-pad/Stick"
-        else:
-            target_device = "keyboard key"
-        self.remap_info_text = f"REMAP {self.remap_target_dir.upper()}: Press a {target_device}..."
+
+    def handle_remap_click(self, mx, my):
+        w, h = SCREEN_WIDTH, SCREEN_HEIGHT
+        p_num = int(self.remap_mode[1])
+        is_gamepad = "gamepad" in self.remap_mode
         
-        input_manager.start_remap(self.remap_target_dir, self.on_remap_success)
+        # Dimensions
+        card_w = 680
+        card_h = 500
+        card_x = w // 2 - card_w // 2
+        card_y = h // 2 - card_h // 2 - 20
+        
+        # Columns
+        x_start_col1 = card_x + 270
+        x_start_col2 = card_x + 450
+        
+        y_header = card_y + 75
+        y_data = y_header + 40
+        row_h = 38
+        
+        # Check cells
+        for i, direction in enumerate(self.remap_directions):
+            y_row = y_data + i * 46
+            
+            # Col 1
+            cell1_w = 340 if is_gamepad else 160
+            cell1_rect = pygame.Rect(x_start_col1, y_row, cell1_w, row_h)
+            if cell1_rect.collidepoint(mx, my):
+                self.active_remap_cell = (direction, 0)
+                input_manager.start_remap(direction, self.on_remap_success)
+                sound_helper.play_select()
+                return
+                
+            # Col 2
+            if not is_gamepad:
+                cell2_rect = pygame.Rect(x_start_col2, y_row, 160, row_h)
+                if cell2_rect.collidepoint(mx, my):
+                    self.active_remap_cell = (direction, 1)
+                    input_manager.start_remap(direction, self.on_remap_success)
+                    sound_helper.play_select()
+                    return
+                    
+        # Check Buttons
+        reset_btn_rect = pygame.Rect(card_x + 60, card_y + card_h - 70, 220, 40)
+        back_btn_rect = pygame.Rect(card_x + card_w - 280, card_y + card_h - 70, 220, 40)
+        
+        if reset_btn_rect.collidepoint(mx, my):
+            sound_helper.play_select()
+            self.reset_remapping_defaults()
+            return
+        elif back_btn_rect.collidepoint(mx, my):
+            sound_helper.play_back()
+            input_manager.cancel_remap()
+            self.state = "SETTINGS"
+            return
+
+    def reset_remapping_defaults(self):
+        p_num = int(self.remap_mode[1])
+        from config import DEFAULT_SETTINGS
+        if "gamepad" in self.remap_mode:
+            prop_name = f"gamepad_p{p_num}"
+            setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
+        elif "guitar" in self.remap_mode:
+            prop_name = f"guitar_keys_p{p_num}"
+            setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
+        else:
+            prop_name = f"keys_p{p_num}"
+            setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
 
     def on_remap_success(self, result_dict):
-        if not result_dict:
+        if not result_dict or getattr(self, "active_remap_cell", None) is None:
             return
             
         in_type = result_dict.get("type")
@@ -1257,7 +1413,6 @@ class App:
             
         sound_helper.play_select()
         
-        # Save to correct settings property dynamically!
         target_group = None
         if "gamepad" in self.remap_mode:
             target_group = "gamepad"
@@ -1267,38 +1422,29 @@ class App:
             target_group = "keys"
             
         p_num = int(self.remap_mode[1])
+        direction, set_idx = self.active_remap_cell
         
         if target_group == "gamepad":
             prop_name = f"gamepad_p{p_num}"
             new_gp = getattr(settings, prop_name).copy()
-            new_gp[self.remap_target_dir] = val_to_save
+            new_gp[direction] = val_to_save
             setattr(settings, prop_name, new_gp)
         elif target_group == "guitar":
             prop_name = f"guitar_keys_p{p_num}"
             new_keys = getattr(settings, prop_name).copy()
-            new_keys[self.remap_target_dir] = val_to_save
+            if not isinstance(new_keys[direction], list):
+                new_keys[direction] = [new_keys[direction], 0]
+            new_keys[direction][set_idx] = val_to_save
             setattr(settings, prop_name, new_keys)
         else:
             prop_name = f"keys_p{p_num}"
             new_keys = getattr(settings, prop_name).copy()
-            new_keys[self.remap_target_dir] = val_to_save
+            if not isinstance(new_keys[direction], list):
+                new_keys[direction] = [new_keys[direction], 0]
+            new_keys[direction][set_idx] = val_to_save
             setattr(settings, prop_name, new_keys)
             
-        # Next step
-        self.remap_step += 1
-        if self.remap_step < len(self.remap_directions):
-            self.remap_target_dir = self.remap_directions[self.remap_step]
-            if "guitar" in self.remap_mode:
-                target_device = "guitar fret / keyboard key"
-            elif "gamepad" in self.remap_mode:
-                target_device = "gamepad button/D-pad/Stick"
-            else:
-                target_device = "keyboard key"
-            self.remap_info_text = f"REMAP {self.remap_target_dir.upper()}: Press a {target_device}..."
-            input_manager.start_remap(self.remap_target_dir, self.on_remap_success)
-        else:
-            input_manager.cancel_remap()
-            self.state = "SETTINGS"
+        self.active_remap_cell = None
 
     def process_gamepad_gameplay_input(self, p_idx, dir_name, is_active):
         if settings.game_mode == "Guitar Hero":
@@ -1484,6 +1630,11 @@ class App:
                         else:
                             self.adjust_setting(-1)
                     return
+
+        # --- REMAP SCREEN ---
+        elif self.state == "REMAP":
+            self.handle_remap_click(mx, my)
+            return
 
         # --- RESULTS SCREEN ---
         elif self.state == "RESULTS":
@@ -2031,21 +2182,165 @@ class App:
 
         # --- DRAW STATE: REMAP ---
         elif self.state == "REMAP":
-            title_surf = menu_font.render(f"REMAP CONTROLLER INPUTS", True, text_color)
-            self.screen.blit(title_surf, (w // 2 - title_surf.get_width() // 2, h // 2 - 150))
+            p_num = int(self.remap_mode[1])
+            is_gamepad = "gamepad" in self.remap_mode
             
-            # Outer block
-            pygame.draw.rect(self.screen, (20, 15, 35) if self.is_dark_theme(theme) else (235, 235, 240), (w // 2 - 250, h // 2 - 80, 500, 200), border_radius=10)
+            # Retrieve keys/bings
+            if is_gamepad:
+                cur_keys = getattr(settings, f"gamepad_p{p_num}", {})
+            elif "guitar" in self.remap_mode:
+                cur_keys = getattr(settings, f"guitar_keys_p{p_num}", {})
+            else:
+                cur_keys = getattr(settings, f"keys_p{p_num}", {})
+                
+            # Table card container dimensions
+            card_w = 680
+            card_h = 500
+            card_x = w // 2 - card_w // 2
+            card_y = h // 2 - card_h // 2 - 20
             
-            # Guide
-            step_lbl = desc_font.render(f"Step {self.remap_step + 1} of {len(self.remap_directions)}", True, text_color)
-            self.screen.blit(step_lbl, (w // 2 - step_lbl.get_width() // 2, h // 2 - 50))
+            # Card background
+            card_bg_col = (20, 15, 30) if self.is_dark_theme(theme) else (235, 235, 240)
+            card_border_col = accent_color
+            pygame.draw.rect(self.screen, card_bg_col, (card_x, card_y, card_w, card_h), border_radius=12)
+            pygame.draw.rect(self.screen, card_border_col, (card_x, card_y, card_w, card_h), width=2, border_radius=12)
             
-            info_surf = menu_font.render(self.remap_info_text, True, accent_color)
-            self.screen.blit(info_surf, (w // 2 - info_surf.get_width() // 2, h // 2 + 10))
+            # Title & Subtitle
+            device_desc = "GAMEPAD" if is_gamepad else "GUITAR KEYBOARD" if "guitar" in self.remap_mode else "KEYBOARD"
+            title_text = f"REMAP INPUTS - PLAYER {p_num}"
+            subtitle_text = f"Device Type: {device_desc}"
             
-            esc_hint = desc_font.render("Press ESC to cancel remapping", True, text_color)
-            self.screen.blit(esc_hint, (w // 2 - esc_hint.get_width() // 2, h // 2 + 80))
+            title_surf = menu_font.render(title_text, True, text_color)
+            self.screen.blit(title_surf, (card_x + 30, card_y + 15))
+            
+            sub_surf = small_font.render(subtitle_text, True, accent_color)
+            self.screen.blit(sub_surf, (card_x + 30, card_y + 48))
+            
+            # Columns
+            x_start_col0 = card_x + 30
+            x_start_col1 = card_x + 270
+            x_start_col2 = card_x + 450
+            
+            y_header = card_y + 75
+            y_data = y_header + 40
+            row_h = 38
+            
+            # Header Row
+            hdr_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 14, bold=True)
+            act_hdr = hdr_font.render("ACTION", True, text_color)
+            set1_hdr = hdr_font.render("GAMEPAD BIND" if is_gamepad else "SET 1 (PRIMARY)", True, text_color)
+            self.screen.blit(act_hdr, (x_start_col0, y_header))
+            self.screen.blit(set1_hdr, (x_start_col1, y_header))
+            
+            if not is_gamepad:
+                set2_hdr = hdr_font.render("SET 2 (SECONDARY)", True, text_color)
+                self.screen.blit(set2_hdr, (x_start_col2, y_header))
+                
+            # Divider line under header
+            pygame.draw.line(self.screen, (50, 45, 70) if self.is_dark_theme(theme) else (200, 200, 205), (card_x + 20, y_header + 22), (card_x + card_w - 20, y_header + 22), 1)
+            
+            # Render each direction/action row
+            for idx, direction in enumerate(self.remap_directions):
+                y_row = y_data + idx * 46
+                
+                # Column 0: Action Label
+                lbl_str = direction.upper()
+                lbl_surf = small_font.render(lbl_str, True, text_color)
+                self.screen.blit(lbl_surf, (x_start_col0, y_row + 8))
+                
+                # Retrieve current bindings
+                raw_val = cur_keys.get(direction)
+                if is_gamepad:
+                    val1 = raw_val
+                    val2 = None
+                else:
+                    if isinstance(raw_val, list):
+                        val1 = raw_val[0]
+                        val2 = raw_val[1] if len(raw_val) > 1 else 0
+                    else:
+                        val1 = raw_val
+                        val2 = 0
+                        
+                # Draw Column 1 Cell
+                cell1_w = 340 if is_gamepad else 160
+                cell1_rect = pygame.Rect(x_start_col1, y_row, cell1_w, row_h)
+                cell1_hover = cell1_rect.collidepoint(mx, my)
+                cell1_active = (getattr(self, "active_remap_cell", None) == (direction, 0))
+                
+                if cell1_active:
+                    bg_col = (255, 128, 0, 100) # orange highlight for active
+                    border_col = (255, 215, 0)
+                    cell_text = "[ PRESS KEY ]" if not is_gamepad else "[ PRESS BUTTON ]"
+                elif cell1_hover:
+                    bg_col = (50, 40, 75, 120) if self.is_dark_theme(theme) else (210, 210, 220, 120)
+                    border_col = accent_color
+                    cell_text = self.get_key_name_str(val1)
+                else:
+                    bg_col = (25, 20, 40) if self.is_dark_theme(theme) else (220, 220, 225)
+                    border_col = (45, 40, 60) if self.is_dark_theme(theme) else (200, 200, 205)
+                    cell_text = self.get_key_name_str(val1)
+                    
+                row_surf = pygame.Surface((cell1_w, row_h), pygame.SRCALPHA)
+                pygame.draw.rect(row_surf, bg_col, (0, 0, cell1_w, row_h), border_radius=6)
+                pygame.draw.rect(row_surf, border_col, (0, 0, cell1_w, row_h), width=1 if not cell1_active else 2, border_radius=6)
+                self.screen.blit(row_surf, (x_start_col1, y_row))
+                
+                txt_surf = small_font.render(cell_text, True, (255, 255, 255) if cell1_active or self.is_dark_theme(theme) else (50, 50, 60))
+                self.screen.blit(txt_surf, (x_start_col1 + cell1_w // 2 - txt_surf.get_width() // 2, y_row + 8))
+                
+                # Draw Column 2 Cell (if keyboard/guitar)
+                if not is_gamepad:
+                    cell2_rect = pygame.Rect(x_start_col2, y_row, 160, row_h)
+                    cell2_hover = cell2_rect.collidepoint(mx, my)
+                    cell2_active = (getattr(self, "active_remap_cell", None) == (direction, 1))
+                    
+                    if cell2_active:
+                        bg_col2 = (255, 128, 0, 100)
+                        border_col2 = (255, 215, 0)
+                        cell_text2 = "[ PRESS KEY ]"
+                    elif cell2_hover:
+                        bg_col2 = (50, 40, 75, 120) if self.is_dark_theme(theme) else (210, 210, 220, 120)
+                        border_col2 = accent_color
+                        cell_text2 = self.get_key_name_str(val2)
+                    else:
+                        bg_col2 = (25, 20, 40) if self.is_dark_theme(theme) else (220, 220, 225)
+                        border_col2 = (45, 40, 60) if self.is_dark_theme(theme) else (200, 200, 205)
+                        cell_text2 = self.get_key_name_str(val2)
+                        
+                    row_surf2 = pygame.Surface((160, row_h), pygame.SRCALPHA)
+                    pygame.draw.rect(row_surf2, bg_col2, (0, 0, 160, row_h), border_radius=6)
+                    pygame.draw.rect(row_surf2, border_col2, (0, 0, 160, row_h), width=1 if not cell2_active else 2, border_radius=6)
+                    self.screen.blit(row_surf2, (x_start_col2, y_row))
+                    
+                    txt_surf2 = small_font.render(cell_text2, True, (255, 255, 255) if cell2_active or self.is_dark_theme(theme) else (50, 50, 60))
+                    self.screen.blit(txt_surf2, (x_start_col2 + 80 - txt_surf2.get_width() // 2, y_row + 8))
+                    
+            # Draw Reset Defaults & Back/Save Buttons
+            reset_rect = pygame.Rect(card_x + 60, card_y + card_h - 70, 220, 40)
+            back_rect = pygame.Rect(card_x + card_w - 280, card_y + card_h - 70, 220, 40)
+            
+            res_hover = reset_rect.collidepoint(mx, my) and getattr(self, "active_remap_cell", None) is None
+            bak_hover = back_rect.collidepoint(mx, my) and getattr(self, "active_remap_cell", None) is None
+            
+            res_bg = (140, 30, 90) if res_hover else (100, 20, 60)
+            bak_bg = (0, 220, 170) if bak_hover else (0, 180, 140)
+            
+            pygame.draw.rect(self.screen, res_bg, reset_rect, border_radius=8)
+            pygame.draw.rect(self.screen, bak_bg, back_rect, border_radius=8)
+            
+            res_surf = small_font.render("RESET DEFAULTS", True, (255, 255, 255))
+            self.screen.blit(res_surf, (reset_rect.centerx - res_surf.get_width() // 2, reset_rect.centery - res_surf.get_height() // 2))
+            
+            bak_surf = small_font.render("BACK / SAVE", True, (255, 255, 255) if self.is_dark_theme(theme) else (45, 45, 55))
+            self.screen.blit(bak_surf, (back_rect.centerx - bak_surf.get_width() // 2, back_rect.centery - bak_surf.get_height() // 2))
+            
+            # Guide text at bottom
+            if getattr(self, "active_remap_cell", None) is not None:
+                guide_str = "Press any key to bind. ESC to cancel, DELETE/BACKSPACE to clear."
+            else:
+                guide_str = "Click any slot to bind new inputs. ESC to save & exit."
+            guide_surf = small_font.render(guide_str, True, text_color)
+            self.screen.blit(guide_surf, (card_x + card_w // 2 - guide_surf.get_width() // 2, card_y + card_h - 22))
 
         # --- DRAW STATE: RESULTS ---
         elif self.state == "RESULTS" and self.results_data:

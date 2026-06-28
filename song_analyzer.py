@@ -210,7 +210,7 @@ class SongAnalyzer:
             is_easy_subdiv = (bar_subdiv % 8 == 0) or (has_peak and bar_subdiv % 4 == 0 and peak_strength > threshold_offset * 1.5)
             if is_easy_subdiv and (has_peak or (bar_subdiv % 8 == 0 and np.random.random() < 0.4)):
                 charts["Easy"].append({
-                    "time": float(t),
+                    "time": float(round(t, 3)),
                     "lanes": [get_next_lane()],
                     "type": "single"
                 })
@@ -220,7 +220,7 @@ class SongAnalyzer:
             is_med_subdiv = (bar_subdiv % 4 == 0)
             if is_med_subdiv and (has_peak or (bar_subdiv % 8 == 0) or (bar_subdiv % 4 == 0 and np.random.random() < 0.5)):
                 charts["Medium"].append({
-                    "time": float(t),
+                    "time": float(round(t, 3)),
                     "lanes": [get_next_lane()],
                     "type": "single"
                 })
@@ -235,13 +235,13 @@ class SongAnalyzer:
                     l1 = get_next_lane()
                     l2 = get_next_lane(exclude_lane=l1)
                     charts["Hard"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [l1, l2],
                         "type": "jump"
                     })
                 else:
                     charts["Hard"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [get_next_lane()],
                         "type": "single"
                     })
@@ -256,13 +256,13 @@ class SongAnalyzer:
                     l1 = get_next_lane()
                     l2 = get_next_lane(exclude_lane=l1)
                     charts["Harder"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [l1, l2],
                         "type": "jump"
                     })
                 else:
                     charts["Harder"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [get_next_lane()],
                         "type": "single"
                     })
@@ -276,14 +276,14 @@ class SongAnalyzer:
                     l1 = get_next_lane()
                     l2 = get_next_lane(exclude_lane=l1)
                     charts["Crazy"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [l1, l2],
                         "type": "jump"
                     })
                 else:
                     # Occasional streams
                     charts["Crazy"].append({
-                        "time": float(t),
+                        "time": float(round(t, 3)),
                         "lanes": [get_next_lane()],
                         "type": "single"
                     })
