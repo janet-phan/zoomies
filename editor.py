@@ -195,41 +195,23 @@ class ChartEditor:
 
     def get_lane_from_key(self, key):
         """Maps a Pygame key code to the corresponding lane index."""
-        num_lanes = 5 if settings.game_mode == "Guitar" else 4
-        if num_lanes == 5:
-            guitar_keys = {
-                pygame.K_a: 0,
-                pygame.K_s: 1,
-                pygame.K_d: 2,
-                pygame.K_f: 3,
-                pygame.K_g: 4,
-                pygame.K_1: 0,
-                pygame.K_2: 1,
-                pygame.K_3: 2,
-                pygame.K_4: 3,
-                pygame.K_5: 4
-            }
-            return guitar_keys.get(key, -1)
-        else:
-            ddr_keys = {
-                pygame.K_d: 0,
-                pygame.K_f: 1,
-                pygame.K_j: 2,
-                pygame.K_k: 3
-            }
-            left_k = settings.keys.get("left")
-            down_k = settings.keys.get("down")
-            up_k = settings.keys.get("up")
-            right_k = settings.keys.get("right")
-            settings_map = {
-                left_k: 0,
-                down_k: 1,
-                up_k: 2,
-                right_k: 3
-            }
-            if key in ddr_keys:
-                return ddr_keys[key]
-            return settings_map.get(key, -1)
+        ddr_keys = {
+            pygame.K_d: 0,
+            pygame.K_f: 1,
+            pygame.K_j: 2,
+            pygame.K_k: 3
+        }
+        if key in ddr_keys:
+            return ddr_keys[key]
+            
+        for idx, direction in enumerate(["left", "down", "up", "right"]):
+            k_val = settings.keys.get(direction)
+            if isinstance(k_val, list):
+                if key in k_val:
+                    return idx
+            elif key == k_val:
+                return idx
+        return -1
 
     def toggle_record(self):
         """Toggles live recording state on/off, flushing active keys to notes."""
@@ -1104,7 +1086,7 @@ class ChartEditor:
             ("R", "Record Mode Play/Pause"),
             ("UP / DOWN", "Step forward / backward"),
             ("LEFT/RIGHT", "Cycle grid snap interval"),
-            ("D,F,J,K", "Add note (Guitar: A,S,D,F,G)"),
+            ("D,F,J,K", "Add note (Lanes 1,2,3,4)"),
             ("H", "Hover + H: Toggle Hold Note"),
             ("Ctrl+Z / Y", "Undo / Redo change"),
             ("[  /  ]", "Set selection start / end"),

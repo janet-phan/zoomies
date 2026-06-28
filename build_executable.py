@@ -14,6 +14,8 @@ def build():
         "--name=Zoomies",
         "--onefile",
         "--console",  # Show command prompt popup for logging/debugging (controllable via in-game settings!)
+        "--icon=zoomies_icon.ico",
+        "--add-data=zoomies_icon.png;.",
         "--clean",
     ]
     

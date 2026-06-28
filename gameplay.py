@@ -4,163 +4,9 @@ import random
 import math
 import os
 import numpy as np
-try:
-    import sounddevice as sd
-except ImportError:
-    sd = None
 from config import settings, SCREEN_WIDTH, SCREEN_HEIGHT, TIMING_PERFECT, TIMING_GREAT, TIMING_GOOD
 from sound_helper import sound_helper
 from theme_manager import theme_manager
-
-class MicrophonePitchTracker:
-    def __init__(self, device_id, sample_rate=22050, block_size=1024):
-        self.device_id = device_id
-        self.sample_rate = sample_rate
-        self.block_size = block_size
-        self.latest_pitch = 0.0
-        self.running = False
-        self.stream = None
-        
-    def start(self):
-        if sd is None:
-            return
-        self.running = True
-        
-        def callback(indata, frames, time, status):
-            if not self.running:
-                return
-            signal = indata[:, 0]
-            # Autocorrelation pitch detection
-            self.latest_pitch = self.detect_pitch(signal, self.sample_rate)
-            
-        try:
-            dev_idx = None if self.device_id < 0 else self.device_id
-            self.stream = sd.InputStream(
-                device=dev_idx,
-                channels=1,
-                samplerate=self.sample_rate,
-                blocksize=self.block_size,
-                callback=callback
-            )
-            self.stream.start()
-        except Exception as e:
-            print(f"Error starting audio stream for device {self.device_id}: {e}")
-            self.running = False
-            
-    def detect_pitch(self, signal, sr):
-        signal = signal - np.mean(signal)
-        rms = np.sqrt(np.mean(signal**2))
-        if rms < 0.008:  # Gate out soft noise
-            return 0.0
-            
-        corr = np.correlate(signal, signal, mode='full')
-        corr = corr[len(corr)//2:]
-        
-        d = np.diff(corr)
-        start = 0
-        for i in range(len(d)):
-            if d[i] > 0:
-                start = i
-                break
-        if start == 0:
-            return 0.0
-            
-        peak = start + np.argmax(corr[start:])
-        if peak == 0:
-            return 0.0
-            
-        freq = sr / peak
-        if 70 <= freq <= 800:  # Human vocal range C2 to G5
-            return freq
-        return 0.0
-        
-    def stop(self):
-        self.running = False
-        if self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except:
-                pass
-            self.stream = None
-
-def analyze_song_vocal_pitch(audio_path):
-    import miniaudio
-    import numpy as np
-    target_notes = []
-    try:
-        print(f"Pre-analyzing song vocal pitch for: {audio_path}...")
-        decoded = miniaudio.decode_file(audio_path)
-        sr = decoded.sample_rate
-        nchannels = decoded.nchannels
-        raw_samples = np.frombuffer(decoded.samples, dtype=np.int16)
-        
-        # Convert to mono
-        if nchannels == 2:
-            raw_samples = (raw_samples[0::2].astype(np.float32) + raw_samples[1::2].astype(np.float32)) / 2.0
-        else:
-            raw_samples = raw_samples.astype(np.float32)
-            
-        # Normalize
-        max_val = np.max(np.abs(raw_samples))
-        if max_val > 0:
-            raw_samples /= max_val
-            
-        # Segment every 0.12 seconds for spacing
-        chunk_duration = 0.12
-        chunk_size = int(chunk_duration * sr)
-        total_chunks = len(raw_samples) // chunk_size
-        
-        for i in range(total_chunks):
-            start_idx = i * chunk_size
-            end_idx = start_idx + chunk_size
-            chunk = raw_samples[start_idx:end_idx]
-            
-            pitch = detect_pitch_mono(chunk, sr)
-            if pitch > 0:
-                target_notes.append({
-                    "time": i * chunk_duration,
-                    "pitch": pitch
-                })
-        print(f"Pre-analysis complete! Generated {len(target_notes)} target vocal notes.")
-    except Exception as e:
-        print(f"Error pre-analyzing vocal pitch: {e}")
-    return target_notes
-
-def detect_pitch_mono(signal, sr):
-    signal = signal - np.mean(signal)
-    rms = np.sqrt(np.mean(signal**2))
-    if rms < 0.005:  # Lower noise gate to capture vocal harmonics
-        return 0.0
-        
-    corr = np.correlate(signal, signal, mode='full')
-    corr = corr[len(corr)//2:]
-    
-    d = np.diff(corr)
-    start = 0
-    for i in range(len(d)):
-        if d[i] > 0:
-            start = i
-            break
-    if start == 0:
-        return 0.0
-        
-    peak = start + np.argmax(corr[start:])
-    if peak == 0:
-        return 0.0
-        
-    freq = sr / peak
-    # Restrict target pitches to clean vocal range
-    if 35 <= freq <= 700:
-        return freq
-    return 0.0
-
-def freq_to_y(freq, min_f=80, max_f=550, height=120):
-    if freq <= 0:
-        return height
-    ratio = (math.log(freq) - math.log(min_f)) / (math.log(max_f) - math.log(min_f))
-    ratio = max(0.0, min(1.0, ratio))
-    return int(height - ratio * height)
 
 def get_or_create_speed_audio(original_filename, speed_multiplier):
     import wave
@@ -294,12 +140,6 @@ class PlayerState:
         self.active_holds = {i: None for i in range(len(lane_x))}
         self.receptor_pulse = [0.0] * len(lane_x)
         self.keys_held = [False] * len(lane_x)
-        self.whammy_held = False
-        self.tilt_held = False
-        self.star_power_gauge = 0.0
-        self.star_power_active = False
-        self.keyboard_pitch = 220.0
-        self.pitch_smooth = 220.0
         
         self.score = 0
         self.combo = 0
@@ -495,16 +335,12 @@ class Gameplay:
         self.players_count = settings.players
         
         # Translate settings game modes to internal gameplay mode states
-        if raw_mode == "Guitar Hero":
-            self.game_mode = "Guitar"
-        elif raw_mode == "FNF":
+        if raw_mode == "FNF":
             self.game_mode = "Versus"
             self.players_count = 2  # Versus is forced 2 players
         elif raw_mode == "Versus":
             self.game_mode = "Versus"
             self.players_count = 2  # Versus is forced 2 players
-        elif raw_mode == "Karaoke":
-            self.game_mode = "Karaoke"
         else:
             self.game_mode = "DDR"
             if raw_mode == "Solo":
@@ -514,59 +350,26 @@ class Gameplay:
         self.vocal_targets = []
         self.vocal_history = {}
         
-        any_microphone = False
-        for p_idx in range(self.players_count):
-            dev_type = getattr(settings, f"device_p{p_idx+1}", "Keyboard")
-            if dev_type == "Microphone":
-                any_microphone = True
-                mic_id = getattr(settings, f"microphone_p{p_idx+1}", -1)
-                tracker = MicrophonePitchTracker(mic_id)
-                tracker.start()
-                self.mic_trackers[p_idx] = tracker
-                
-        if any_microphone:
-            self.vocal_history = {p_idx: [] for p_idx in range(self.players_count)}
-            audio_full_path = os.path.join(settings.SONGS_DIR, self.song_filename)
-            self.vocal_targets = analyze_song_vocal_pitch(audio_full_path)
-                
-        # Determine num_lanes for Guitar mode: Easy/Medium = 4 lanes, Hard+ = 5 lanes
-        if self.game_mode == "Guitar":
-            if self.difficulty in ["Easy", "Medium"]:
-                self.num_lanes = 4
-            else:
-                self.num_lanes = 5
-        else:
-            self.num_lanes = 4
+        self.num_lanes = 4
         
         # Select width and spacing based on player count to fit side-by-side
         if self.players_count == 4:
-            self.lane_width = 40 if self.game_mode == "Guitar" else 42
-            self.lane_spacing = 6 if self.game_mode == "Guitar" else 8
+            self.lane_width = 42
+            self.lane_spacing = 8
         elif self.players_count == 3:
-            self.lane_width = 52 if self.game_mode == "Guitar" else 58
-            self.lane_spacing = 8 if self.game_mode == "Guitar" else 12
+            self.lane_width = 58
+            self.lane_spacing = 12
         elif self.players_count == 2:
-            self.lane_width = 65 if self.game_mode == "Guitar" else 72
-            self.lane_spacing = 10 if self.game_mode == "Guitar" else 18
+            self.lane_width = 72
+            self.lane_spacing = 18
         else:
-            self.lane_width = 75 if self.game_mode == "Guitar" else 82
-            self.lane_spacing = 15 if self.game_mode == "Guitar" else 22
+            self.lane_width = 82
+            self.lane_spacing = 22
             
         self.total_width = (self.lane_width * self.num_lanes) + (self.lane_spacing * (self.num_lanes - 1))
         
-        # Convert chart to 5 lanes if in Guitar Mode
-        self.chart = []
-        for note in self.baseline_chart:
-            n_copy = dict(note)
-            if self.num_lanes == 5:
-                new_lanes = []
-                for lane in n_copy["lanes"]:
-                    if lane == 3:
-                        new_lanes.append(random.choice([3, 4]))
-                    else:
-                        new_lanes.append(lane)
-                n_copy["lanes"] = sorted(list(set(new_lanes)))
-            self.chart.append(n_copy)
+        # Lock chart to default 4 lanes
+        self.chart = [dict(note) for note in self.baseline_chart]
             
         # Layout positioning
         self.is_downscroll = (settings.theme == "Guitar-Hero")
@@ -673,90 +476,7 @@ class Gameplay:
         p.notes = sorted(kept_notes + future_notes, key=lambda x: x["time"])
         print(f"P{p.player_idx+1} dynamic difficulty changed to {new_diff}!")
 
-    def trigger_fret(self, player_idx, fret_idx, is_down):
-        """Used in Guitar Mode to track active fret presses."""
-        if player_idx < len(self.players):
-            self.held_frets[player_idx][fret_idx] = is_down
-            p = self.players[player_idx]
-            p.keys_held[fret_idx] = is_down
-            if is_down:
-                p.receptor_pulse[fret_idx] = 1.0
 
-    def trigger_whammy(self, player_idx, is_down):
-        """Whammy bar action in Guitar Mode."""
-        if player_idx < len(self.players):
-            self.players[player_idx].whammy_held = is_down
-
-    def trigger_tilt(self, player_idx, is_down):
-        """Tilt sensor action in Guitar Mode."""
-        if player_idx < len(self.players):
-            self.players[player_idx].tilt_held = is_down
-
-    def trigger_strum(self, player_idx):
-        """Strum bar hit trigger in Guitar Mode."""
-        if player_idx >= len(self.players) or self.paused or self.game_over:
-            return
-            
-        p = self.players[player_idx]
-        curr_time = self.get_current_time()
-        held = self.held_frets[player_idx]
-        
-        # Identify active held fret lanes
-        held_lanes = [i for i, val in enumerate(held) if val]
-        if not held_lanes:
-            return # Strumming with no frets held does nothing
-            
-        best_note = None
-        best_diff = TIMING_GOOD
-        
-        for note in p.notes:
-            if not note["hit"] and not note["missed"]:
-                diff = abs(note["time"] - curr_time)
-                if diff < best_diff:
-                    # Match frets held precisely with lanes in note
-                    if note["lanes"] == held_lanes:
-                        best_diff = diff
-                        best_note = note
-                        
-        if best_note:
-            rating = "GOOD"
-            color = (200, 200, 50)
-            score_gain = settings.SCORE_GOOD
-            
-            if best_diff <= TIMING_PERFECT:
-                rating = "PERFECT"
-                color = (0, 255, 204)
-                score_gain = settings.SCORE_PERFECT
-                p.perfects += 1
-            elif best_diff <= TIMING_GREAT:
-                rating = "GREAT"
-                color = (255, 215, 0)
-                score_gain = settings.SCORE_GREAT
-                p.greats += 1
-            else:
-                p.goods += 1
-                
-            best_note["hit"] = True
-            if p.star_power_active:
-                score_gain *= 2
-            p.score += score_gain
-            if not p.star_power_active:
-                p.star_power_gauge = min(1.0, p.star_power_gauge + 0.02)
-            p.combo += 1
-            if p.combo > p.max_combo:
-                p.max_combo = p.combo
-                
-            p.set_char_state("perfect_cheer" if rating == "PERFECT" else "cheer", 0.9, pop=1.1)
-            sound_helper.play_hit()
-            
-            # Particles
-            for lane in held_lanes:
-                x = p.lane_x[lane]
-                y = self.receptor_y
-                self.spawn_hit_particles(x, y, lane, rating)
-            p.trigger_judgment(rating, color)
-        else:
-            p.set_char_state("umm", 0.8)
 
     def trigger_input(self, direction_idx, is_down, player_idx=0):
         if player_idx >= len(self.players) or self.paused or self.game_over:
@@ -798,11 +518,7 @@ class Gameplay:
                     p.goods += 1
                     
                 best_note["hit"] = True
-                if p.star_power_active:
-                    score_gain *= 2
                 p.score += score_gain
-                if not p.star_power_active:
-                    p.star_power_gauge = min(1.0, p.star_power_gauge + 0.02)
                 p.combo += 1
                 if p.combo > p.max_combo:
                     p.max_combo = p.combo
@@ -888,131 +604,33 @@ class Gameplay:
             
         curr_time = self.get_current_time()
         
-        if self.vocal_history:
-            # Update pitch inputs & smooth for players using Microphone
-            for p in self.players:
-                dev_type = getattr(settings, f"device_p{p.player_idx+1}")
-                if dev_type == "Microphone":
-                    raw_pitch = 0.0
-                    if p.player_idx in self.mic_trackers:
-                        raw_pitch = self.mic_trackers[p.player_idx].latest_pitch
-                    else:
-                        # Fallback arrow keyboard pitch control (Keys 2 for UP, 1 for DOWN)
-                        if p.keys_held[2]:
-                            p.keyboard_pitch = min(500.0, p.keyboard_pitch + 240.0 * dt)
-                        elif p.keys_held[1]:
-                            p.keyboard_pitch = max(80.0, p.keyboard_pitch - 240.0 * dt)
-                        raw_pitch = p.keyboard_pitch
-                        
-                    if raw_pitch > 0:
-                        p.pitch_smooth = p.pitch_smooth * 0.70 + raw_pitch * 0.30
-                    else:
-                        p.pitch_smooth = p.pitch_smooth * 0.88 + 0.0 * 0.12
-                        
-                    self.vocal_history[p.player_idx].append((curr_time, p.pitch_smooth))
-                    self.vocal_history[p.player_idx] = [(t, f) for t, f in self.vocal_history[p.player_idx] if t >= curr_time - 1.5]
-                    
-                    # Update Star Power timers
-                    if p.star_power_active:
-                        p.star_power_gauge = max(0.0, p.star_power_gauge - dt * 0.12)
-                        if p.star_power_gauge == 0.0:
-                            p.star_power_active = False
-                    
-                    # Check note matches
-                    matched_note = None
-                    for note in self.vocal_targets:
-                        if abs(note["time"] - curr_time) <= 0.08:
-                            matched_note = note
-                            break
-                            
-                    if matched_note:
-                        target_pitch = matched_note["pitch"]
-                        if p.pitch_smooth > 0 and abs(p.pitch_smooth - target_pitch) / target_pitch < 0.16:
-                            gain = int(250 * dt)
-                            if p.star_power_active:
-                                gain *= 2
-                            p.score += gain
-                            
-                            # Increment combo periodically (every 0.1 sec)
-                            if random.random() < dt * 10:
-                                p.combo = min(999, p.combo + 1)
-                                if p.combo > p.max_combo:
-                                    p.max_combo = p.combo
-                                
-                            p.set_char_state("cheer", 0.12)
-                            
-                            if not p.star_power_active:
-                                p.star_power_gauge = min(1.0, p.star_power_gauge + dt * 0.05)
-                                
-                            if random.random() < 0.3:
-                                track_h = SCREEN_HEIGHT // self.players_count
-                                track_y = p.player_idx * track_h
-                                cy = track_y + 25 + freq_to_y(p.pitch_smooth, height=track_h - 60)
-                                self.particles.append(Particle(120, cy, (0, 255, 204)))
-                        else:
-                            if p.combo > 0 and random.random() < dt * 2.0:
-                                p.combo = 0
-                    else:
-                        if p.combo > 0 and random.random() < dt * 1.5:
-                            p.combo = 0
-                            
-        # Standard Highway Tap/Hold loops for other players
+        # Standard Highway Tap/Hold loops for all players
         for p in self.players:
-            dev_type = getattr(settings, f"device_p{p.player_idx+1}")
-            if dev_type != "Microphone":
-                # Check misses and hold completions
-                for note in p.notes:
-                    if not note["hit"] and not note["missed"] and curr_time > note["time"] + TIMING_GOOD:
-                        note["missed"] = True
-                        p.misses += 1
-                        p.combo = 0
-                        p.trigger_judgment("MISS", (180, 50, 50))
-                        p.set_char_state("miss", 1.0)
-                        sound_helper.play_miss()
-                        
-                        if p.player_idx == 0 and p.is_dynamic:
-                            p.current_dynamic_idx = max(1, p.current_dynamic_idx - 1)
-                            self.change_dynamic_difficulty(p.current_dynamic_idx)
-                            
-                # Update Star Power states
-                if p.star_power_active:
-                    p.star_power_gauge = max(0.0, p.star_power_gauge - dt * 0.12)
-                    if p.star_power_gauge == 0.0:
-                        p.star_power_active = False
+            # Check misses and hold completions
+            for note in p.notes:
+                if not note["hit"] and not note["missed"] and curr_time > note["time"] + TIMING_GOOD:
+                    note["missed"] = True
+                    p.misses += 1
+                    p.combo = 0
+                    p.trigger_judgment("MISS", (180, 50, 50))
+                    p.set_char_state("miss", 1.0)
+                    sound_helper.play_miss()
                     
-                    # Spawn electric lightning particles
-                    if random.random() < 0.25:
-                        l = random.randint(0, self.num_lanes - 1)
-                        lx = p.lane_x[l]
-                        self.particles.append(Particle(lx, self.receptor_y, (0, 204, 255)))
-                else:
-                    is_guitar = (dev_type == "Guitar")
-                    can_whammy = (self.game_mode == "Guitar" or settings.game_mode == "Guitar Hero") or (self.game_mode == "Karaoke" and is_guitar)
-                    if can_whammy and (p.whammy_held or p.tilt_held) and p.star_power_gauge >= 0.5:
-                        p.star_power_active = True
-                        sound_helper.play_hit()
+                    if p.player_idx == 0 and p.is_dynamic:
+                        p.current_dynamic_idx = max(1, p.current_dynamic_idx - 1)
+                        self.change_dynamic_difficulty(p.current_dynamic_idx)
                             
                 # Continuous scoring for active holds
                 for lane, hold_note in p.active_holds.items():
                     if hold_note is not None:
                         if curr_time >= hold_note["endtime"]:
                             gain = 500
-                            if p.star_power_active:
-                                gain *= 2
                             p.score += gain
                             p.trigger_judgment("HOLD OK", (0, 255, 204))
                             p.active_holds[lane] = None
                         else:
                             gain = int(100 * dt)
-                            if p.star_power_active:
-                                gain *= 2
                             p.score += gain
-                            
-                            # For Hard+ guitar players, using whammy on sustain notes fills star power gauge
-                            diff = getattr(settings, "difficulty", "Medium")
-                            is_hard_plus = diff not in ["Easy", "Medium"]
-                            if dev_type == "Guitar" and is_hard_plus and p.whammy_held and not p.star_power_active:
-                                p.star_power_gauge = min(1.0, p.star_power_gauge + dt * 0.15)
                             
         # Check if song finished
         if self.song_started and not pygame.mixer.music.get_busy() and not self.paused:
@@ -1069,160 +687,19 @@ class Gameplay:
         beat_progress = curr_time * (self.bpm / 60.0)
         
         # --- ON-BEAT FULLSCREEN GLOW PULSE ---
+        # --- ON-BEAT FULLSCREEN GLOW PULSE ---
         beat_pulse = max(0.0, 1.0 - (beat_progress % 1.0) * 4.0)
         if beat_pulse > 0.0:
             glow_surf = pygame.Surface((w, h), pygame.SRCALPHA)
-            any_star_active = any(getattr(p, "star_power_active", False) for p in self.players)
-            if any_star_active:
-                glow_col = (255, 215, 0, int(beat_pulse * 35)) # Gold flash during star power
-            else:
-                glow_col = (0, 255, 204, int(beat_pulse * 18)) # Cool teal beat pulse
+            glow_col = (0, 255, 204, int(beat_pulse * 18)) # Cool teal beat pulse
             glow_surf.fill(glow_col)
             surface.blit(glow_surf, (0, 0))
         
-        singers = [p for p in self.players if getattr(settings, f"device_p{p.player_idx+1}") == "Microphone"]
-        highway_players = [p for p in self.players if getattr(settings, f"device_p{p.player_idx+1}") != "Microphone"]
-        
-        # 1. Draw Vocal Tracks for Singers
-        if singers:
-            # If there are also highway players, we draw a single/multiple compact vocal tracks at the top
-            if highway_players:
-                track_h = 130
-                for idx, p in enumerate(singers):
-                    col_w = w // self.players_count
-                    col_x = p.player_idx * col_w
-                    track_y = 15
-                    
-                    bg_col = (18, 15, 30, 200) if theme != "Minimalist" else (240, 240, 245, 200)
-                    card_rect = pygame.Rect(col_x + 15, track_y, col_w - 30, track_h)
-                    pygame.draw.rect(surface, bg_col, card_rect, border_radius=10)
-                    pygame.draw.rect(surface, (80, 70, 110) if theme != "Minimalist" else (210, 210, 215), card_rect, width=1, border_radius=10)
-                    
-                    # Apply clipping to keep notes inside the player's card
-                    old_clip = surface.get_clip()
-                    surface.set_clip(card_rect)
-                    
-                    for line_ratio in [0.25, 0.5, 0.75]:
-                        ly = track_y + 10 + int((track_h - 20) * line_ratio)
-                        pygame.draw.line(surface, (50, 45, 70) if theme != "Minimalist" else (225, 225, 230), (col_x + 20, ly), (col_x + col_w - 20, ly), 1)
-                        
-                    scroll_origin_x = col_x + 60
-                    
-                    for note in self.vocal_targets:
-                        note_time = note["time"]
-                        if curr_time - 1.0 <= note_time <= curr_time + 4.0:
-                            note_x = scroll_origin_x + int((note_time - curr_time) * 110)
-                            note_y = track_y + 10 + freq_to_y(note["pitch"], height=track_h - 20)
-                            
-                            is_matching = False
-                            if abs(curr_time - note_time) <= 0.08:
-                                target_p = note["pitch"]
-                                if p.pitch_smooth > 0 and abs(p.pitch_smooth - target_p) / target_p < 0.16:
-                                    is_matching = True
-                                    
-                            note_color = (255, 215, 0) if is_matching else (0, 150, 255)
-                            pygame.draw.circle(surface, note_color, (note_x, note_y), 6)
-                            if is_matching:
-                                pygame.draw.circle(surface, (255, 255, 255), (note_x, note_y), 9, width=1)
-                                
-                    hist = self.vocal_history.get(p.player_idx, [])
-                    if len(hist) > 1:
-                        points = []
-                        for t, pitch in hist:
-                            if pitch > 0:
-                                px = scroll_origin_x + int((t - curr_time) * 110)
-                                py_val = track_y + 10 + freq_to_y(pitch, height=track_h - 20)
-                                points.append((px, py_val))
-                        if len(points) > 1:
-                            pygame.draw.lines(surface, (0, 255, 204), False, points, 3)
-                            
-                    cursor_y = track_y + 10 + freq_to_y(p.pitch_smooth, height=track_h - 20)
-                    cursor_col = (0, 255, 204) if p.pitch_smooth > 0 else (120, 110, 130)
-                    pygame.draw.circle(surface, cursor_col, (scroll_origin_x, cursor_y), 8)
-                    pygame.draw.circle(surface, (255, 255, 255), (scroll_origin_x, cursor_y), 8, width=2)
-                    
-                    hud_font = pygame.font.SysFont("Impact" if theme in ["DDR-Retro", "Retro-Pixel"] else "Segoe UI", 14)
-                    p_info = f"P{p.player_idx+1}: {p.character_name} | SCORE: {p.score:07d}"
-                    p_surf = hud_font.render(p_info, True, (255, 255, 255) if theme != "Minimalist" else (45, 45, 55))
-                    surface.blit(p_surf, (col_x + 25, track_y + 10))
-                    
-                    surface.set_clip(old_clip)
-                    
-                    self.draw_player_character(surface, p, theme, beat_progress)
-            else:
-                # Pure Karaoke mode (full screen height division)
-                track_h = h // len(singers)
-                for p in singers:
-                    track_y = p.player_idx * track_h
-                    bg_col = (18, 15, 30, 200) if theme != "Minimalist" else (240, 240, 245, 200)
-                    card_rect = (30, track_y + 15, w - 60, track_h - 30)
-                    pygame.draw.rect(surface, bg_col, card_rect, border_radius=10)
-                    pygame.draw.rect(surface, (80, 70, 110) if theme != "Minimalist" else (210, 210, 215), card_rect, width=1, border_radius=10)
-                    
-                    for line_ratio in [0.25, 0.5, 0.75]:
-                        ly = track_y + 25 + int((track_h - 60) * line_ratio)
-                        pygame.draw.line(surface, (50, 45, 70) if theme != "Minimalist" else (225, 225, 230), (45, ly), (w - 45, ly), 1)
-                        
-                    for note in self.vocal_targets:
-                        note_time = note["time"]
-                        if curr_time - 1.0 <= note_time <= curr_time + 4.0:
-                            note_x = 120 + int((note_time - curr_time) * 180)
-                            note_y = track_y + 25 + freq_to_y(note["pitch"], height=track_h - 60)
-                            
-                            is_matching = False
-                            if abs(curr_time - note_time) <= 0.08:
-                                target_p = note["pitch"]
-                                if p.pitch_smooth > 0 and abs(p.pitch_smooth - target_p) / target_p < 0.16:
-                                    is_matching = True
-                                    
-                            note_color = (255, 215, 0) if is_matching else (0, 150, 255)
-                            pygame.draw.circle(surface, note_color, (note_x, note_y), 6)
-                            if is_matching:
-                                pygame.draw.circle(surface, (255, 255, 255), (note_x, note_y), 9, width=1)
-                                
-                    hist = self.vocal_history.get(p.player_idx, [])
-                    if len(hist) > 1:
-                        points = []
-                        for t, pitch in hist:
-                            if pitch > 0:
-                                px = 120 + int((t - curr_time) * 180)
-                                py_val = track_y + 25 + freq_to_y(pitch, height=track_h - 60)
-                                points.append((px, py_val))
-                        if len(points) > 1:
-                            pygame.draw.lines(surface, (0, 255, 204), False, points, 3)
-                            
-                    cursor_y = track_y + 25 + freq_to_y(p.pitch_smooth, height=track_h - 60)
-                    cursor_col = (0, 255, 204) if p.pitch_smooth > 0 else (120, 110, 130)
-                    pygame.draw.circle(surface, cursor_col, (120, cursor_y), 8)
-                    pygame.draw.circle(surface, (255, 255, 255), (120, cursor_y), 8, width=2)
-                    
-                    hud_font = pygame.font.SysFont("Impact" if theme in ["DDR-Retro", "Retro-Pixel"] else "Segoe UI", 14)
-                    p_info = f"P{p.player_idx+1}: {p.character_name}  |  SCORE: {p.score:07d}  |  COMBO: {p.combo}"
-                    p_surf = hud_font.render(p_info, True, (255, 255, 255) if theme != "Minimalist" else (45, 45, 55))
-                    surface.blit(p_surf, (45, track_y + 22))
-                    
-                    self.draw_player_character(surface, p, theme, beat_progress)
-                    
-                if not self.song_started:
-                    font_large = pygame.font.SysFont("Impact", 72)
-                    elapsed = time.time() - self.intro_start_time
-                    remaining = int(math.ceil(self.intro_delay - elapsed))
-                    if remaining > 0:
-                        count_lbl = font_large.render(str(remaining), True, (255, 255, 255) if theme != "Minimalist" else (45, 45, 55))
-                        surface.blit(count_lbl, (w // 2 - count_lbl.get_width() // 2, h // 2 - count_lbl.get_height() // 2))
-                
-                for part in self.particles:
-                    part.draw(surface)
-                    
-                if self.paused:
-                    self.draw_pause_screen(surface, theme)
-                return
-                
         # Draw FNF battle bar in Versus mode
         if self.game_mode == "Versus" and len(self.players) == 2:
             self.draw_versus_bar(surface)
             
-        for p in highway_players:
+        for p in self.players:
             # Draw highway backdrop panel
             hw_x = p.lane_x[0] - self.lane_width // 2 - 10
             hw_w = self.total_width + 20
@@ -1233,30 +710,21 @@ class Gameplay:
                 flash_y = self.receptor_y
                 flash_h = 44
                 flash_surf = pygame.Surface((hw_w, flash_h), pygame.SRCALPHA)
-                # Cyan/teal for standard, Gold for star power active
-                f_color = (255, 215, 0) if p.star_power_active else (0, 255, 204)
+                f_color = (0, 255, 204)
                 f_alpha = int(beat_pulse * 64)
                 pygame.draw.rect(flash_surf, (f_color[0], f_color[1], f_color[2], f_alpha), (0, 0, hw_w, flash_h), border_radius=4)
                 surface.blit(flash_surf, (hw_x, flash_y - flash_h // 2 + self.lane_width // 2))
 
-            if p.star_power_active:
-                pygame.draw.rect(surface, (10, 35, 75, 190), (hw_x, 0, hw_w, h))
-                # Glow/Pulse golden-blue border lines on beat
-                pulse_color = tuple(int(c1 + (c2 - c1) * beat_pulse) for c1, c2 in zip((0, 102, 204), (255, 215, 0)))
-                line_w = 4 + int(beat_pulse * 4)
-                pygame.draw.line(surface, pulse_color, (hw_x, 0), (hw_x, h), line_w)
-                pygame.draw.line(surface, pulse_color, (hw_x + hw_w, 0), (hw_x + hw_w, h), line_w)
+            pygame.draw.rect(surface, (12, 10, 18, 180) if theme != "Minimalist" else (240, 240, 245, 180), (hw_x, 0, hw_w, h))
+            # Pulse cyan highway sides on beat
+            if theme == "DDR-Retro":
+                bd_color = tuple(int(c1 + (c2 - c1) * beat_pulse) for c1, c2 in zip((0, 150, 120), (0, 255, 204)))
+                line_w = 2 + int(beat_pulse * 2)
             else:
-                pygame.draw.rect(surface, (12, 10, 18, 180) if theme != "Minimalist" else (240, 240, 245, 180), (hw_x, 0, hw_w, h))
-                # Pulse cyan highway sides on beat
-                if theme == "DDR-Retro":
-                    bd_color = tuple(int(c1 + (c2 - c1) * beat_pulse) for c1, c2 in zip((0, 150, 120), (0, 255, 204)))
-                    line_w = 2 + int(beat_pulse * 2)
-                else:
-                    bd_color = (180, 180, 190)
-                    line_w = 2
-                pygame.draw.line(surface, bd_color, (hw_x, 0), (hw_x, h), line_w)
-                pygame.draw.line(surface, bd_color, (hw_x + hw_w, 0), (hw_x + hw_w, h), line_w)
+                bd_color = (180, 180, 190)
+                line_w = 2
+            pygame.draw.line(surface, bd_color, (hw_x, 0), (hw_x, h), line_w)
+            pygame.draw.line(surface, bd_color, (hw_x + hw_w, 0), (hw_x + hw_w, h), line_w)
             
             # Draw Receptor targets calling theme_manager.draw_arrow
             for idx, lx in enumerate(p.lane_x):
@@ -1298,28 +766,10 @@ class Gameplay:
                                 ty = int(start_y)
                                 
                             if th > 0:
-                                if p.whammy_held and is_currently_holding:
-                                    step = 4
-                                    for y_offset in range(0, th, step):
-                                        seg_y = ty + y_offset
-                                        disp_x = int(10 * math.sin(time.time() * 30 + seg_y * 0.08))
-                                        seg_color = (
-                                            min(255, trail_color[0] + 50),
-                                            min(255, trail_color[1] + 50),
-                                            min(255, trail_color[2] + 150)
-                                        )
-                                        pygame.draw.rect(surface, seg_color, (lx + disp_x - 12, seg_y, 24, min(step, th - y_offset)))
-                                        
-                                    disp_end_x = int(10 * math.sin(time.time() * 30 + int(end_y) * 0.08))
-                                    pygame.draw.rect(surface, trail_color, (lx + disp_end_x - 15, int(end_y) - 4, 30, 8), border_radius=2)
-                                    
-                                    if random.random() < 0.4:
-                                        self.particles.append(Particle(lx, self.receptor_y, (255, 255, 255)))
-                                else:
-                                    trail_surf = pygame.Surface((24, th), pygame.SRCALPHA)
-                                    trail_surf.fill((trail_color[0], trail_color[1], trail_color[2], 130))
-                                    surface.blit(trail_surf, (lx - 12, ty))
-                                    pygame.draw.rect(surface, trail_color, (lx - 15, int(end_y) - 4, 30, 8), border_radius=2)
+                                trail_surf = pygame.Surface((24, th), pygame.SRCALPHA)
+                                trail_surf.fill((trail_color[0], trail_color[1], trail_color[2], 130))
+                                surface.blit(trail_surf, (lx - 12, ty))
+                                pygame.draw.rect(surface, trail_color, (lx - 15, int(end_y) - 4, 30, 8), border_radius=2)
                             
             # Draw Note heads calling theme_manager.draw_arrow
             for note in p.notes:
@@ -1331,11 +781,8 @@ class Gameplay:
                         y = self.receptor_y - int(t_diff * self.scroll_speed)
                         
                     if 0 <= y <= SCREEN_HEIGHT:
-                        # Determine rhythm color if not Guitar Hero mode
-                        if settings.game_mode == "Guitar Hero":
-                            n_col = None
-                        else:
-                            n_col = self.get_note_rhythm_color(note["time"], self.bpm)
+                        # Determine rhythm color
+                        n_col = self.get_note_rhythm_color(note["time"], self.bpm)
                             
                         for lane in note["lanes"]:
                             lx = p.lane_x[lane]
@@ -1373,42 +820,7 @@ class Gameplay:
             surface.blit(score_surf, (hx, hy + 22))
             surface.blit(combo_surf, (hx, hy + 44))
             
-            # Draw Star Power / Fever Gauge (only in Guitar Hero mode or if player is using Guitar in Karaoke)
-            is_guitar = (getattr(settings, f"device_p{p.player_idx+1}") == "Guitar")
-            has_star_power = (settings.game_mode == "Guitar Hero" or self.game_mode == "Guitar") or (self.game_mode == "Karaoke" and is_guitar)
-            
-            if has_star_power:
-                hw_x = p.lane_x[0] - self.lane_width // 2 - 10
-                gauge_w = 10
-                gauge_h = 240
-                gauge_x = hw_x - 18
-                gauge_y = h // 2 - gauge_h // 2
-                
-                # Draw background
-                pygame.draw.rect(surface, (40, 40, 45), (gauge_x, gauge_y, gauge_w, gauge_h), border_radius=3)
-                pygame.draw.rect(surface, (80, 80, 85), (gauge_x, gauge_y, gauge_w, gauge_h), width=1, border_radius=3)
-                
-                if p.star_power_gauge > 0.0:
-                    if p.star_power_active:
-                        fill_col = (255, 215, 0) if (int(time.time() * 10) % 2 == 0) else (0, 204, 255)
-                    elif p.star_power_gauge >= 0.5:
-                        fill_col = (0, 255, 204) if (int(time.time() * 4) % 2 == 0) else (0, 150, 150)
-                    else:
-                        fill_col = (0, 102, 204)
-                        
-                    fill_h = int(gauge_h * p.star_power_gauge)
-                    if fill_h > 0:
-                        pygame.draw.rect(surface, fill_col, (gauge_x, gauge_y + gauge_h - fill_h, gauge_w, fill_h), border_radius=3)
-                    
-                if p.star_power_active:
-                    fever_lbl_surf = pygame.font.SysFont("Segoe UI", 10, bold=True).render("STAR POWER!" if settings.game_mode == "Guitar Hero" else "FEVER!", True, (255, 215, 0))
-                    surface.blit(fever_lbl_surf, (gauge_x - fever_lbl_surf.get_width() // 2 + gauge_w // 2, gauge_y - 18))
-                elif p.star_power_gauge >= 0.5:
-                    dev_type = getattr(settings, f"device_p{p.player_idx+1}")
-                    trigger_dev = "Whammy/Tilt" if dev_type == "Gamepad" else "Whammy Key"
-                    ready_lbl_surf = pygame.font.SysFont("Segoe UI", 9, bold=True).render("READY!", True, (0, 255, 204))
-                    surface.blit(ready_lbl_surf, (gauge_x - ready_lbl_surf.get_width() // 2 + gauge_w // 2, gauge_y - 18))
-            
+
             # Cheering character
             self.draw_player_character(surface, p, theme, beat_progress)
             
@@ -1441,9 +853,6 @@ class Gameplay:
         py = 150 if self.is_downscroll else h - 130
         
         state = p.char_state
-        if p.star_power_active:
-            state = "perfect_cheer" if "perfect_cheer" in p.char_images and p.char_images["perfect_cheer"] else "cheer"
-            
         frames = p.char_images.get(state, [])
         if frames:
             if state == "idle":

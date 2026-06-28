@@ -88,6 +88,18 @@ class App:
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Zoomies - Beat Generation Rhythm Game")
         
+        # Set window icon
+        try:
+            base_path = getattr(sys, '_MEIPASS', settings.BASE_DIR)
+            icon_path = os.path.join(base_path, "zoomies_icon.png")
+            if not os.path.exists(icon_path):
+                icon_path = os.path.join(settings.BASE_DIR, "zoomies_icon.png")
+            if os.path.exists(icon_path):
+                icon_surf = pygame.image.load(icon_path)
+                pygame.display.set_icon(icon_surf)
+        except Exception as e:
+            print(f"Could not load window icon: {e}")
+        
         self.clock = pygame.Clock()
         input_manager.refresh_joysticks()
         self.apply_console_visibility()
@@ -113,8 +125,6 @@ class App:
             "SFX VOLUME",
             "REMAP P1 KEYBOARD (DDR)",
             "REMAP P2 KEYBOARD (DDR)",
-            "REMAP P1 GUITAR (KEYBOARD)",
-            "REMAP P2 GUITAR (KEYBOARD)",
             "BACK"
         ]
         
@@ -178,6 +188,22 @@ class App:
 
         # Init sounds
         sound_helper.init_sounds()
+
+        # Title screen background particles (drifting cat paws/heads)
+        self.title_particles = []
+        for _ in range(16):
+            self.title_particles.append({
+                "x": random.randint(0, SCREEN_WIDTH),
+                "y": random.randint(0, SCREEN_HEIGHT),
+                "speed_y": random.uniform(-60, -20),
+                "speed_x": random.uniform(-10, 10),
+                "type": random.choice(["paw", "face"]),
+                "size": random.randint(18, 32),
+                "alpha": random.randint(25, 75),
+                "wobble_speed": random.uniform(1.2, 2.8),
+                "wobble_amp": random.uniform(6, 14),
+                "start_time": random.uniform(0, 100)
+            })
 
     def scan_songs(self):
         """Scans the songs directory for JSON beatmaps and populates the list."""
@@ -396,66 +422,26 @@ class App:
                     for p_idx in range(self.gameplay.players_count):
                         p_num = p_idx + 1
                         device = getattr(settings, f"device_p{p_num}", "Keyboard")
-                        
-                        if device in ["Keyboard", "Guitar"]:
-                            if settings.game_mode == "Guitar Hero":
-                                guitar_keys = getattr(settings, f"guitar_keys_p{p_num}", {})
-                                # Check frets
-                                for fret_name, fret_idx in [("green", 0), ("red", 1), ("yellow", 2), ("blue", 3), ("orange", 4)]:
-                                    val = guitar_keys.get(fret_name)
-                                    if isinstance(val, list):
-                                        if key in val:
-                                            self.gameplay.trigger_fret(p_idx, fret_idx, is_down)
-                                    else:
-                                        if key == val:
-                                            self.gameplay.trigger_fret(p_idx, fret_idx, is_down)
-                                            
-                                # Check strum
-                                val_strum = guitar_keys.get("strum")
-                                if isinstance(val_strum, list):
-                                    if key in val_strum and is_down:
-                                        self.gameplay.trigger_strum(p_idx)
-                                elif isinstance(val_strum, int):
-                                    if key == val_strum and is_down:
-                                        self.gameplay.trigger_strum(p_idx)
-                                        
-                                # Check whammy
-                                val_whammy = guitar_keys.get("whammy")
-                                if isinstance(val_whammy, list):
-                                    if key in val_whammy:
-                                        self.gameplay.trigger_whammy(p_idx, is_down)
-                                elif isinstance(val_whammy, int):
-                                    if key == val_whammy:
-                                        self.gameplay.trigger_whammy(p_idx, is_down)
-                                        
-                                # Check tilt
-                                val_tilt = guitar_keys.get("tilt")
-                                if isinstance(val_tilt, list):
-                                    if key in val_tilt:
-                                        self.gameplay.trigger_tilt(p_idx, is_down)
-                                elif isinstance(val_tilt, int):
-                                    if key == val_tilt:
-                                        self.gameplay.trigger_tilt(p_idx, is_down)
-                            else:
-                                # DDR/FNF/Karaoke modes
-                                p_keys = getattr(settings, f"keys_p{p_num}", {})
-                                for dir_idx, dir_name in enumerate(["left", "down", "up", "right"]):
-                                    mapped_val = p_keys.get(dir_name)
-                                    if isinstance(mapped_val, list):
-                                        if key in mapped_val:
-                                            self.gameplay.trigger_input(dir_idx, is_down, p_idx)
-                                            break
-                                    else:
-                                        if key == mapped_val:
-                                            self.gameplay.trigger_input(dir_idx, is_down, p_idx)
-                                            break
+                        if device == "Keyboard":
+                            # DDR/FNF modes
+                            p_keys = getattr(settings, f"keys_p{p_num}", {})
+                            for dir_idx, dir_name in enumerate(["left", "down", "up", "right"]):
+                                mapped_val = p_keys.get(dir_name)
+                                if isinstance(mapped_val, list):
+                                    if key in mapped_val:
+                                        self.gameplay.trigger_input(dir_idx, is_down, p_idx)
+                                        break
+                                else:
+                                    if key == mapped_val:
+                                        self.gameplay.trigger_input(dir_idx, is_down, p_idx)
+                                        break
                                     
                 elif event.type in [pygame.JOYBUTTONDOWN, pygame.JOYBUTTONUP]:
                     is_down = (event.type == pygame.JOYBUTTONDOWN)
                     btn_id = event.button
                     
                     # Find which player maps to this gamepad ID (event.joy)
-                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") in ["Gamepad", "Guitar"]]
+                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") == "Gamepad"]
                     if joystick_players:
                         if len(joystick_players) == 1:
                             p_idx = joystick_players[0]
@@ -465,12 +451,7 @@ class App:
                             else:
                                 continue
                         p_num = p_idx + 1
-                        
-                        dev_type = getattr(settings, f"device_p{p_num}")
-                        if dev_type == "Guitar":
-                            gp_settings = getattr(settings, f"guitar_keys_p{p_num}", {})
-                        else:
-                            gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
+                        gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
                             
                         for dir_name in gp_settings.keys():
                             map_val = gp_settings.get(dir_name)
@@ -482,7 +463,7 @@ class App:
                     x, y = event.value
                     
                     # Find which player maps to this gamepad ID (event.joy)
-                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") in ["Gamepad", "Guitar"]]
+                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") == "Gamepad"]
                     if joystick_players:
                         if len(joystick_players) == 1:
                             p_idx = joystick_players[0]
@@ -492,12 +473,7 @@ class App:
                             else:
                                 continue
                         p_num = p_idx + 1
-                        
-                        dev_type = getattr(settings, f"device_p{p_num}")
-                        if dev_type == "Guitar":
-                            gp_settings = getattr(settings, f"guitar_keys_p{p_num}", {})
-                        else:
-                            gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
+                        gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
                             
                         for dir_name in gp_settings.keys():
                             map_val = gp_settings.get(dir_name)
@@ -516,7 +492,7 @@ class App:
                     axis_val = event.value
                     
                     # Find which player maps to this gamepad ID (event.joy)
-                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") in ["Gamepad", "Guitar"]]
+                    joystick_players = [idx for idx in range(self.gameplay.players_count) if getattr(settings, f"device_p{idx+1}") == "Gamepad"]
                     if joystick_players:
                         if len(joystick_players) == 1:
                             p_idx = joystick_players[0]
@@ -526,12 +502,7 @@ class App:
                             else:
                                 continue
                         p_num = p_idx + 1
-                        
-                        dev_type = getattr(settings, f"device_p{p_num}")
-                        if dev_type == "Guitar":
-                            gp_settings = getattr(settings, f"guitar_keys_p{p_num}", {})
-                        else:
-                            gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
+                        gp_settings = getattr(settings, f"gamepad_p{p_num}", {})
                             
                         for dir_name in gp_settings.keys():
                             map_val = gp_settings.get(dir_name)
@@ -608,14 +579,6 @@ class App:
                         new_gp = getattr(settings, prop_name).copy()
                         new_gp[direction] = {} # Clear gamepad binding
                         setattr(settings, prop_name, new_gp)
-                    elif "guitar" in self.remap_mode:
-                        prop_name = f"guitar_keys_p{p_num}"
-                        new_keys = getattr(settings, prop_name).copy()
-                        if isinstance(new_keys[direction], list):
-                            new_keys[direction][set_idx] = 0
-                        else:
-                            new_keys[direction] = [0, 0]
-                        setattr(settings, prop_name, new_keys)
                     else:
                         prop_name = f"keys_p{p_num}"
                         new_keys = getattr(settings, prop_name).copy()
@@ -784,8 +747,6 @@ class App:
                 sound_helper.play_select()
                 if "KEYBOARD" in opt:
                     self.start_key_remapping(f"p{p_num}_ddr")
-                elif "GUITAR" in opt:
-                    self.start_key_remapping(f"p{p_num}_guitar")
                 elif "GAMEPAD" in opt:
                     self.start_key_remapping(f"p{p_num}_gamepad")
             else:
@@ -824,7 +785,7 @@ class App:
                 self.gameplay.toggle_pause()
 
     def is_dark_theme(self, theme):
-        return theme in ["DDR-Retro", "Retro-Pixel", "Futuristic", "Neko-Pixel", "Guitar-Hero"]
+        return theme in ["DDR-Retro", "Retro-Pixel", "Futuristic", "Neko-Pixel"]
 
     def get_key_name_str(self, key_val):
         if not key_val or key_val == 0:
@@ -908,28 +869,18 @@ class App:
             opts.append(f"--- PLAYER {p} CONFIG ---")
             opts.append(f"P{p} CHARACTER")
             
-            if settings.game_mode == "Karaoke":
-                setattr(settings, f"device_p{p}", "Microphone")
-            else:
-                allowed = ["Keyboard", "Guitar", "Gamepad"]
-                if settings.game_mode == "Guitar Hero":
-                    allowed = ["Guitar", "Keyboard", "Microphone"]
-                curr_dev = getattr(settings, f"device_p{p}", "Keyboard")
-                if curr_dev not in allowed:
-                    setattr(settings, f"device_p{p}", allowed[0])
+            allowed = ["Keyboard", "Gamepad"]
+            curr_dev = getattr(settings, f"device_p{p}", "Keyboard")
+            if curr_dev not in allowed:
+                setattr(settings, f"device_p{p}", allowed[0])
             
-            if settings.game_mode != "Karaoke":
-                opts.append(f"P{p} DEVICE")
+            opts.append(f"P{p} DEVICE")
                 
             dev = getattr(settings, f"device_p{p}", "Keyboard")
             if dev == "Keyboard":
                 opts.append(f"REMAP P{p} KEYBOARD")
-            elif dev == "Guitar":
-                opts.append(f"REMAP P{p} GUITAR")
             elif dev == "Gamepad":
                 opts.append(f"REMAP P{p} GAMEPAD")
-            elif dev == "Microphone":
-                opts.append(f"P{p} MICROPHONE")
                 
         # UI Settings
         opts.append("--- UI SETTINGS ---")
@@ -974,41 +925,10 @@ class App:
             return "Gamepad (Not Connected)"
         elif dev == "Keyboard":
             return "Keyboard"
-        elif dev == "Guitar":
-            if len(input_manager.joysticks) > 0:
-                for j in input_manager.joysticks:
-                    j_name = j.get_name().lower()
-                    if "guitar" in j_name or "riffmaster" in j_name or "rock band" in j_name or "hero" in j_name:
-                        name = j.get_name()
-                        if len(name) > 18:
-                            name = name[:15] + "..."
-                        return f"Guitar ({name})"
-                fallback_name = input_manager.joysticks[0].get_name()
-                if len(fallback_name) > 18:
-                    fallback_name = fallback_name[:15] + "..."
-                return f"Guitar ({fallback_name})"
-            return "Guitar (Keyboard Mode)"
         return dev
-        
+
     def set_player_dev(self, p_num, val):
         setattr(settings, f"device_p{p_num}", val)
-
-    def get_microphone_list(self):
-        try:
-            import sounddevice as sd
-            devs = sd.query_devices()
-            mic_names = []
-            for idx, d in enumerate(devs):
-                if d.get("max_input_channels", 0) > 0:
-                    name = d["name"]
-                    if len(name) > 30:
-                        name = name[:27] + "..."
-                    mic_names.append((idx, name))
-            if not mic_names:
-                mic_names.append((-1, "Default Microphone"))
-            return mic_names
-        except Exception:
-            return [(-1, "Default Microphone")]
 
     def apply_console_visibility(self):
         if getattr(sys, "frozen", False) and sys.platform == "win32":
@@ -1039,7 +959,7 @@ class App:
             self.apply_console_visibility()
             sound_helper.play_select()
         elif opt == "THEME":
-            themes = ["DDR-Retro", "Minimalist", "Guitar-Hero", "Retro-Pixel", "Futuristic", "Kawaii-Pink", "Neko-Pixel"]
+            themes = ["DDR-Retro", "Minimalist", "Retro-Pixel", "Futuristic", "Kawaii-Pink", "Neko-Pixel"]
             curr_idx = themes.index(settings.theme) if settings.theme in themes else 0
             settings.theme = themes[(curr_idx + dir_val) % len(themes)]
             sound_helper.play_select()
@@ -1047,7 +967,7 @@ class App:
             settings.players = ((settings.players - 1 + dir_val) % 4) + 1
             sound_helper.play_select()
         elif opt == "GAME MODE":
-            modes = ["Solo", "Co-Op", "Versus", "FNF", "Guitar Hero", "Karaoke"]
+            modes = ["Solo", "Co-Op", "Versus", "FNF"]
             curr_idx = modes.index(settings.game_mode) if settings.game_mode in modes else 0
             settings.game_mode = modes[(curr_idx + dir_val) % len(modes)]
             sound_helper.play_select()
@@ -1060,31 +980,13 @@ class App:
             sound_helper.play_select()
         elif opt.startswith("P") and "DEVICE" in opt:
             p_num = int(opt[1])
-            if settings.game_mode == "Karaoke":
-                devices = ["Microphone"]
-            elif settings.game_mode == "Guitar Hero":
-                devices = ["Guitar", "Keyboard", "Microphone"]
-            else:
-                devices = ["Keyboard", "Guitar", "Gamepad"]
-                
+            devices = ["Keyboard", "Gamepad"]
             curr_dev = getattr(settings, f"device_p{p_num}", "Keyboard")
             if curr_dev not in devices:
                 curr_dev = devices[0]
             curr_idx = devices.index(curr_dev)
             new_dev = devices[(curr_idx + dir_val) % len(devices)]
             self.set_player_dev(p_num, new_dev)
-            sound_helper.play_select()
-        elif opt.startswith("P") and "MICROPHONE" in opt:
-            p_num = int(opt[1])
-            mics = self.get_microphone_list()
-            curr_idx_val = getattr(settings, f"microphone_p{p_num}")
-            list_idx = 0
-            for i, (m_id, m_name) in enumerate(mics):
-                if m_id == curr_idx_val:
-                    list_idx = i
-                    break
-            new_list_idx = (list_idx + dir_val) % len(mics)
-            setattr(settings, f"microphone_p{p_num}", mics[new_list_idx][0])
             sound_helper.play_select()
 
     def delete_song(self, song):
@@ -1325,13 +1227,10 @@ class App:
 
     def start_key_remapping(self, mode):
         self.state = "REMAP"
-        self.remap_mode = mode  # "p1_ddr", "p2_ddr", "p3_ddr", "p4_ddr", "p1_guitar", "p2_guitar", ...
+        self.remap_mode = mode  # "p1_ddr", "p2_ddr", "p3_ddr", "p4_ddr", "p1_gamepad", ...
         self.active_remap_cell = None
         self.remap_hover_cell = None
-        if "guitar" in mode:
-            self.remap_directions = ["green", "red", "yellow", "blue", "orange", "strum", "whammy", "tilt"]
-        else:
-            self.remap_directions = ["left", "down", "up", "right"]
+        self.remap_directions = ["left", "down", "up", "right"]
 
     def handle_remap_click(self, mx, my):
         w, h = SCREEN_WIDTH, SCREEN_HEIGHT
@@ -1394,9 +1293,6 @@ class App:
         if "gamepad" in self.remap_mode:
             prop_name = f"gamepad_p{p_num}"
             setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
-        elif "guitar" in self.remap_mode:
-            prop_name = f"guitar_keys_p{p_num}"
-            setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
         else:
             prop_name = f"keys_p{p_num}"
             setattr(settings, prop_name, DEFAULT_SETTINGS[prop_name].copy())
@@ -1416,8 +1312,6 @@ class App:
         target_group = None
         if "gamepad" in self.remap_mode:
             target_group = "gamepad"
-        elif "guitar" in self.remap_mode or settings.game_mode == "Guitar Hero":
-            target_group = "guitar"
         else:
             target_group = "keys"
             
@@ -1429,13 +1323,6 @@ class App:
             new_gp = getattr(settings, prop_name).copy()
             new_gp[direction] = val_to_save
             setattr(settings, prop_name, new_gp)
-        elif target_group == "guitar":
-            prop_name = f"guitar_keys_p{p_num}"
-            new_keys = getattr(settings, prop_name).copy()
-            if not isinstance(new_keys[direction], list):
-                new_keys[direction] = [new_keys[direction], 0]
-            new_keys[direction][set_idx] = val_to_save
-            setattr(settings, prop_name, new_keys)
         else:
             prop_name = f"keys_p{p_num}"
             new_keys = getattr(settings, prop_name).copy()
@@ -1447,21 +1334,9 @@ class App:
         self.active_remap_cell = None
 
     def process_gamepad_gameplay_input(self, p_idx, dir_name, is_active):
-        if settings.game_mode == "Guitar Hero":
-            fret_map = {"green": 0, "red": 1, "yellow": 2, "blue": 3, "orange": 4}
-            if dir_name in fret_map:
-                self.gameplay.trigger_fret(p_idx, fret_map[dir_name], is_active)
-            elif dir_name == "strum":
-                if is_active:
-                    self.gameplay.trigger_strum(p_idx)
-            elif dir_name == "whammy":
-                self.gameplay.trigger_whammy(p_idx, is_active)
-            elif dir_name == "tilt":
-                self.gameplay.trigger_tilt(p_idx, is_active)
-        else:
-            dir_map = {"left": 0, "down": 1, "up": 2, "right": 3}
-            if dir_name in dir_map:
-                self.gameplay.trigger_input(dir_map[dir_name], is_active, p_idx)
+        dir_map = {"left": 0, "down": 1, "up": 2, "right": 3}
+        if dir_name in dir_map:
+            self.gameplay.trigger_input(dir_map[dir_name], is_active, p_idx)
 
     def update(self, dt):
         theme = settings.theme
@@ -1474,6 +1349,18 @@ class App:
         if self.state in ["TITLE", "SONG_SELECT", "SETTINGS"]:
             mx, my = pygame.mouse.get_pos()
             self.handle_mouse_hover(mx, my)
+
+        # Update title screen background particles
+        if self.state == "TITLE":
+            for p in self.title_particles:
+                p["y"] += p["speed_y"] * dt
+                p["start_time"] += dt
+                p["x"] += (p["speed_x"] + math.sin(p["start_time"] * p["wobble_speed"]) * p["wobble_amp"] * 0.1) * dt
+                if p["y"] < -50 or p["x"] < -50 or p["x"] > SCREEN_WIDTH + 50:
+                    p["y"] = SCREEN_HEIGHT + 50
+                    p["x"] = random.randint(0, SCREEN_WIDTH)
+                    p["speed_y"] = random.uniform(-60, -20)
+                    p["speed_x"] = random.uniform(-10, 10)
 
         # Handle re-scan songs when analysis completes successfully
         if self.state == "ANALYZING":
@@ -1712,6 +1599,43 @@ class App:
 
         # --- DRAW STATE: TITLE ---
         if self.state == "TITLE":
+            # Draw floating animated cat particles in the background first
+            for p in self.title_particles:
+                try:
+                    p_surf = pygame.Surface((p["size"] * 2, p["size"] * 2), pygame.SRCALPHA)
+                    alpha = p["alpha"]
+                    col = (255, 255, 255, alpha) if self.is_dark_theme(theme) else (60, 50, 75, alpha)
+                    r = p["size"] // 2
+                    cx, cy = p["size"], p["size"]
+                    
+                    if p["type"] == "paw":
+                        pad_col = (255, 200, 215, alpha) if self.is_dark_theme(theme) else (140, 100, 115, alpha)
+                        # Main pad
+                        pygame.draw.circle(p_surf, col, (cx, cy), r)
+                        # Toes
+                        for dx, dy in [(-r * 0.7, -r * 0.3), (-r * 0.3, -r * 0.7), (r * 0.3, -r * 0.7), (r * 0.7, -r * 0.3)]:
+                            pygame.draw.circle(p_surf, col, (int(cx + dx), int(cy + dy)), int(r * 0.35))
+                        # Main center pad
+                        pygame.draw.circle(p_surf, pad_col, (cx, cy + int(r * 0.15)), int(r * 0.5))
+                    else:
+                        # Cat head/face
+                        pygame.draw.circle(p_surf, col, (cx, cy + int(r * 0.15)), int(r * 0.85))
+                        # Left Ear
+                        pygame.draw.polygon(p_surf, col, [
+                            (cx - int(r * 0.8), cy - int(r * 0.1)),
+                            (cx - int(r * 0.4), cy - int(r * 0.3)),
+                            (cx - int(r * 0.75), cy - int(r * 0.85))
+                        ])
+                        # Right Ear
+                        pygame.draw.polygon(p_surf, col, [
+                            (cx + int(r * 0.8), cy - int(r * 0.1)),
+                            (cx + int(r * 0.4), cy - int(r * 0.3)),
+                            (cx + int(r * 0.75), cy - int(r * 0.85))
+                        ])
+                    self.screen.blit(p_surf, (int(p["x"] - cx), int(p["y"] - cy)))
+                except:
+                    pass
+
             # Glow effect for Title in Retro Theme
             title_text = "ZOOMIES"
             if theme == "DDR-Retro":
@@ -1728,12 +1652,12 @@ class App:
             main_title_surf = title_font.render(title_text, True, text_color)
             self.screen.blit(main_title_surf, (w // 2 - main_title_surf.get_width() // 2, 150))
             
-            sub_title = desc_font.render("Furry & Fast Auto-Generated Rhythm Game", True, accent_color)
+            sub_title = desc_font.render("Furry & Fast Rhythm Game", True, accent_color)
             self.screen.blit(sub_title, (w // 2 - sub_title.get_width() // 2, 230))
             
             # Developer Credits
             dev_lbl = small_font.render("developed by PixelPaws Studio", True, (130, 120, 140) if self.is_dark_theme(theme) else (90, 80, 100))
-            self.screen.blit(dev_lbl, (w // 2 - dev_lbl.get_width() // 2, h - 50))
+            self.screen.blit(dev_lbl, (w // 2 - dev_lbl.get_width() // 2, h - 80))
             
             # Draw Title Options
             for idx, opt in enumerate(self.title_options):
@@ -2046,9 +1970,9 @@ class App:
             paw_x = w // 2
             paw_y = h // 2 + 40 + paw_bob
             
-            fur_col = (252, 210, 153) # Cute cream-orange cat fur
-            pad_col = (244, 143, 177) # Soft pink toe pads
-            shadow_col = (220, 170, 115) # Slightly darker fur for border
+            fur_col = (255, 255, 255) # Fluffy white cat fur
+            pad_col = (255, 180, 200) # Soft pink toe pads
+            shadow_col = (220, 220, 225) # Soft light grey for border/shadow
             
             # Draw arm extending from bottom
             arm_w = 64
@@ -2136,16 +2060,6 @@ class App:
                 elif opt.startswith("P") and "DEVICE" in opt:
                     p_num = int(opt[1])
                     value_text = self.get_player_dev(p_num)
-                elif opt.startswith("P") and "MICROPHONE" in opt:
-                    p_num = int(opt[1])
-                    mics = self.get_microphone_list()
-                    curr_val = getattr(settings, f"microphone_p{p_num}")
-                    mic_name = "Default Microphone"
-                    for m_id, name in mics:
-                        if m_id == curr_val:
-                            mic_name = name
-                            break
-                    value_text = mic_name
                 elif opt == "MUSIC VOLUME":
                     value_text = f"{int(settings.music_volume * 100)}%"
                 elif opt == "SFX VOLUME":
@@ -2156,7 +2070,7 @@ class App:
                     value_text = "[ Press Enter ]"
                 
                 # Print Left/Right indicator on selections
-                if opt in ["PLAYERS", "GAME MODE", "MUSIC VOLUME", "SFX VOLUME", "SHOW CONSOLE", "THEME"] or ("CHARACTER" in opt) or ("DEVICE" in opt) or ("MICROPHONE" in opt):
+                if opt in ["PLAYERS", "GAME MODE", "MUSIC VOLUME", "SFX VOLUME", "SHOW CONSOLE", "THEME"] or ("CHARACTER" in opt) or ("DEVICE" in opt):
                     if is_selected:
                         value_text = f"<  {value_text}  >"
 
@@ -2188,8 +2102,6 @@ class App:
             # Retrieve keys/bings
             if is_gamepad:
                 cur_keys = getattr(settings, f"gamepad_p{p_num}", {})
-            elif "guitar" in self.remap_mode:
-                cur_keys = getattr(settings, f"guitar_keys_p{p_num}", {})
             else:
                 cur_keys = getattr(settings, f"keys_p{p_num}", {})
                 
@@ -2206,7 +2118,7 @@ class App:
             pygame.draw.rect(self.screen, card_border_col, (card_x, card_y, card_w, card_h), width=2, border_radius=12)
             
             # Title & Subtitle
-            device_desc = "GAMEPAD" if is_gamepad else "GUITAR KEYBOARD" if "guitar" in self.remap_mode else "KEYBOARD"
+            device_desc = "GAMEPAD" if is_gamepad else "KEYBOARD"
             title_text = f"REMAP INPUTS - PLAYER {p_num}"
             subtitle_text = f"Device Type: {device_desc}"
             
@@ -2288,7 +2200,7 @@ class App:
                 txt_surf = small_font.render(cell_text, True, (255, 255, 255) if cell1_active or self.is_dark_theme(theme) else (50, 50, 60))
                 self.screen.blit(txt_surf, (x_start_col1 + cell1_w // 2 - txt_surf.get_width() // 2, y_row + 8))
                 
-                # Draw Column 2 Cell (if keyboard/guitar)
+                # Draw Column 2 Cell (if keyboard)
                 if not is_gamepad:
                     cell2_rect = pygame.Rect(x_start_col2, y_row, 160, row_h)
                     cell2_hover = cell2_rect.collidepoint(mx, my)

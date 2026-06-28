@@ -42,7 +42,7 @@ DEFAULT_SETTINGS = {
     "character_p2": "Beat Bot",
     "character_p3": "Beat Bot",
     "character_p4": "Beat Bot",
-    "game_mode": "Solo",  # "Solo", "Co-Op", "Versus", "FNF", "Guitar Hero", "Karaoke"
+    "game_mode": "Solo",  # "Solo", "Co-Op", "Versus", "FNF"
     "players": 1,
     "show_console": False,
     "music_volume": 0.8,
@@ -51,10 +51,6 @@ DEFAULT_SETTINGS = {
     "device_p2": "Keyboard",
     "device_p3": "Gamepad",
     "device_p4": "Gamepad",
-    "microphone_p1": -1,
-    "microphone_p2": -1,
-    "microphone_p3": -1,
-    "microphone_p4": -1,
     "keys_p1": {
         "left": [97, 1073741904],          # A, Left Arrow
         "down": [115, 1073741905],         # S, Down Arrow
@@ -78,46 +74,6 @@ DEFAULT_SETTINGS = {
         "down": [1073741917, 0],  # Numpad 5, Unassigned
         "up": [1073741920, 0],    # Numpad 8, Unassigned
         "right": [1073741918, 0], # Numpad 6, Unassigned
-    },
-    "guitar_keys_p1": {
-        "green": [97, 0],
-        "red": [115, 0],
-        "yellow": [100, 0],
-        "blue": [102, 0],
-        "orange": [103, 0],
-        "strum": [32, 0],
-        "whammy": [306, 0],
-        "tilt": [308, 0]
-    },
-    "guitar_keys_p2": {
-        "green": [104, 0],
-        "red": [106, 0],
-        "yellow": [107, 0],
-        "blue": [108, 0],
-        "orange": [59, 0],
-        "strum": [13, 0],
-        "whammy": [305, 0],
-        "tilt": [307, 0]
-    },
-    "guitar_keys_p3": {
-        "green": [105, 0],        # I
-        "red": [111, 0],          # O
-        "yellow": [112, 0],       # P
-        "blue": [91, 0],          # [
-        "orange": [93, 0],          # ]
-        "strum": [305, 0],         # RCTRL
-        "whammy": [308, 0],         # LALT
-        "tilt": [306, 0]
-    },
-    "guitar_keys_p4": {
-        "green": [1073741913, 0],  # Numpad 1
-        "red": [1073741914, 0],    # Numpad 2
-        "yellow": [1073741915, 0],  # Numpad 3
-        "blue": [1073741916, 0],    # Numpad 4
-        "orange": [1073741917, 0],  # Numpad 5
-        "strum": [1073741922, 0],   # Numpad Enter
-        "whammy": [307, 0],          # RALT
-        "tilt": [305, 0]
     },
     "gamepad": {
         "enabled": True,
@@ -186,12 +142,6 @@ class Settings:
                                 val = self.data[k_key].get(dir_name)
                                 if val is not None and not isinstance(val, list):
                                     self.data[k_key][dir_name] = [val, 0]
-                        g_key = f"guitar_keys_p{p}"
-                        if g_key in self.data:
-                            for fret_name in ["green", "red", "yellow", "blue", "orange", "strum", "whammy", "tilt"]:
-                                val = self.data[g_key].get(fret_name)
-                                if val is not None and not isinstance(val, list):
-                                    self.data[g_key][fret_name] = [val, 0]
             except Exception as e:
                 print(f"Error loading settings: {e}")
                 self.data = DEFAULT_SETTINGS.copy()
@@ -257,24 +207,6 @@ class Settings:
     @keys_p2.setter
     def keys_p2(self, val):
         self.data["keys_p2"] = val
-        self.save()
-
-    @property
-    def guitar_keys_p1(self):
-        return self.data.get("guitar_keys_p1", DEFAULT_SETTINGS["guitar_keys_p1"])
-
-    @guitar_keys_p1.setter
-    def guitar_keys_p1(self, val):
-        self.data["guitar_keys_p1"] = val
-        self.save()
-
-    @property
-    def guitar_keys_p2(self):
-        return self.data.get("guitar_keys_p2", DEFAULT_SETTINGS["guitar_keys_p2"])
-
-    @guitar_keys_p2.setter
-    def guitar_keys_p2(self, val):
-        self.data["guitar_keys_p2"] = val
         self.save()
 
     # Fallback property for single player compatibility
@@ -421,23 +353,7 @@ class Settings:
         self.data["keys_p4"] = val
         self.save()
 
-    @property
-    def guitar_keys_p3(self):
-        return self.data.get("guitar_keys_p3", DEFAULT_SETTINGS["guitar_keys_p3"])
 
-    @guitar_keys_p3.setter
-    def guitar_keys_p3(self, val):
-        self.data["guitar_keys_p3"] = val
-        self.save()
-
-    @property
-    def guitar_keys_p4(self):
-        return self.data.get("guitar_keys_p4", DEFAULT_SETTINGS["guitar_keys_p4"])
-
-    @guitar_keys_p4.setter
-    def guitar_keys_p4(self, val):
-        self.data["guitar_keys_p4"] = val
-        self.save()
 
     @property
     def game_mode(self):
@@ -457,40 +373,6 @@ class Settings:
         self.data["players"] = int(val)
         self.save()
 
-    @property
-    def microphone_p1(self):
-        return self.data.get("microphone_p1", -1)
 
-    @microphone_p1.setter
-    def microphone_p1(self, val):
-        self.data["microphone_p1"] = int(val)
-        self.save()
-
-    @property
-    def microphone_p2(self):
-        return self.data.get("microphone_p2", -1)
-
-    @microphone_p2.setter
-    def microphone_p2(self, val):
-        self.data["microphone_p2"] = int(val)
-        self.save()
-
-    @property
-    def microphone_p3(self):
-        return self.data.get("microphone_p3", -1)
-
-    @microphone_p3.setter
-    def microphone_p3(self, val):
-        self.data["microphone_p3"] = int(val)
-        self.save()
-
-    @property
-    def microphone_p4(self):
-        return self.data.get("microphone_p4", -1)
-
-    @microphone_p4.setter
-    def microphone_p4(self, val):
-        self.data["microphone_p4"] = int(val)
-        self.save()
 
 settings = Settings()
