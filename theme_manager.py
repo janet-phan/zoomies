@@ -1,7 +1,9 @@
 import pygame
 import math
 import random
-from config import settings
+import os
+import json
+from config import settings, BASE_DIR
 
 class ThemeManager:
     # Color Palettes
@@ -82,8 +84,108 @@ class ThemeManager:
             (-10, -4),
             (-24, -4)
         ]
+        self.themes_dir = os.path.join(BASE_DIR, "themes")
+        self.custom_themes = {}
+        self.custom_theme_assets = {}
+        
+        self.setup_and_scan_custom_themes()
+
+    def setup_and_scan_custom_themes(self):
+        if not os.path.exists(self.themes_dir):
+            os.makedirs(self.themes_dir)
+            
+        readme_path = os.path.join(self.themes_dir, "readme.txt")
+        if not os.path.exists(readme_path):
+            try:
+                with open(readme_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        "ZOOMIES THEME MODDING GUIDE\n"
+                        "--------------------------\n"
+                        "To create a custom theme, create a new folder here (e.g. themes/MyTheme) and place a 'theme.json' inside it.\n"
+                        "You can configure colors, fonts, background images, and custom arrow textures.\n\n"
+                        "See 'Example-Blue/theme.json' for the format configuration.\n"
+                    )
+            except Exception as e:
+                print(f"Error writing theme modding readme: {e}")
+                
+        # Write ExampleTheme folder
+        example_dir = os.path.join(self.themes_dir, "Example-Blue")
+        if not os.path.exists(example_dir):
+            try:
+                os.makedirs(example_dir)
+                example_json = {
+                    "name": "Example-Blue",
+                    "bg_color": [10, 15, 35],
+                    "text_color": [220, 230, 255],
+                    "accent_color": [0, 191, 255],
+                    "lane_colors": [
+                        [0, 150, 255],
+                        [0, 200, 255],
+                        [0, 255, 255],
+                        [0, 100, 220],
+                        [255, 255, 255]
+                    ],
+                    "arrow_type": "default"
+                }
+                with open(os.path.join(example_dir, "theme.json"), "w") as f:
+                    json.dump(example_json, f, indent=4)
+            except Exception as e:
+                print(f"Error writing ExampleTheme template: {e}")
+                
+        # Scan themes folder
+        try:
+            for item_name in os.listdir(self.themes_dir):
+                theme_path = os.path.join(self.themes_dir, item_name)
+                if os.path.isdir(theme_path):
+                    config_json = os.path.join(theme_path, "theme.json")
+                    if os.path.exists(config_json):
+                        with open(config_json, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        t_name = data.get("name", item_name)
+                        self.custom_themes[t_name] = data
+                        
+                        assets = {}
+                        
+                        # Load custom background image
+                        bg_img_file = data.get("bg_image")
+                        if bg_img_file:
+                            full_bg_path = os.path.join(theme_path, bg_img_file)
+                            if os.path.exists(full_bg_path):
+                                img = pygame.image.load(full_bg_path).convert()
+                                assets["bg_image"] = img
+                                
+                        # Load custom arrow images
+                        arrow_imgs = data.get("arrow_images")
+                        if arrow_imgs:
+                            assets["arrows"] = {}
+                            idx_map = {"left": 0, "down": 1, "up": 2, "right": 3}
+                            for dir_key, file_val in arrow_imgs.items():
+                                if dir_key in idx_map:
+                                    arrow_path = os.path.join(theme_path, file_val)
+                                    if os.path.exists(arrow_path):
+                                        assets["arrows"][idx_map[dir_key]] = pygame.image.load(arrow_path).convert_alpha()
+                                        
+                        # Load custom receptor images
+                        rec_imgs = data.get("receptor_images")
+                        if rec_imgs:
+                            assets["receptors"] = {}
+                            idx_map = {"left": 0, "down": 1, "up": 2, "right": 3}
+                            for dir_key, file_val in rec_imgs.items():
+                                if dir_key in idx_map:
+                                    rec_path = os.path.join(theme_path, file_val)
+                                    if os.path.exists(rec_path):
+                                        assets["receptors"][idx_map[dir_key]] = pygame.image.load(rec_path).convert_alpha()
+                                        
+                        self.custom_theme_assets[t_name] = assets
+                        print(f"Loaded mod theme: {t_name}")
+        except Exception as e:
+            print(f"Error scanning custom themes dir: {e}")
 
     def get_bg_color(self, theme):
+        if theme in self.custom_themes:
+            c = self.custom_themes[theme].get("bg_color")
+            if c:
+                return tuple(c)
         if theme == "DDR-Retro":
             return self.COLOR_BG_RETRO
         elif theme == "Minimalist":
@@ -99,11 +201,19 @@ class ThemeManager:
         return (18, 18, 22)
 
     def get_text_color(self, theme):
+        if theme in self.custom_themes:
+            c = self.custom_themes[theme].get("text_color")
+            if c:
+                return tuple(c)
         if theme in ["Minimalist", "Kawaii-Pink"]:
             return (45, 45, 55)
         return (255, 255, 255)
 
     def get_accent_color(self, theme):
+        if theme in self.custom_themes:
+            c = self.custom_themes[theme].get("accent_color")
+            if c:
+                return tuple(c)
         if theme in ["DDR-Retro", "Futuristic"]:
             return (0, 255, 204)  # Neon Cyan
         elif theme in ["Kawaii-Pink", "Neko-Pixel"]:
@@ -114,6 +224,10 @@ class ThemeManager:
 
     def get_lane_color(self, lane, theme):
         l = lane % 5
+        if theme in self.custom_themes:
+            c_list = self.custom_themes[theme].get("lane_colors")
+            if c_list and len(c_list) > l:
+                return tuple(c_list[l])
         if theme == "Guitar-Hero" or settings.game_mode == "Guitar Hero":
             return self.HERO_LANE_COLORS[l]
         elif theme == "DDR-Retro":
@@ -191,111 +305,119 @@ class ThemeManager:
         pygame.draw.polygon(surface, color, pts, width)
 
     def draw_arrow(self, surface, x, y, direction, theme, scale=1.0, is_receptor=False, active_pulse=0.0, note_color=None):
-        if not is_receptor and note_color is not None:
-            lane_color = note_color
-        else:
-            lane_color = self.get_lane_color(direction, theme)
+        # Check for custom mod arrow asset
+        assets = self.custom_theme_assets.get(theme)
+        if assets:
+            pulse_scale = 1.0 + (0.15 * active_pulse)
+            scaled_sz = int(48 * scale * pulse_scale)
+            
+            img_surf = None
+            if is_receptor and "receptors" in assets and direction in assets["receptors"]:
+                img_surf = assets["receptors"][direction]
+            elif "arrows" in assets and direction in assets["arrows"]:
+                img_surf = assets["arrows"][direction]
+                
+            if img_surf:
+                drawn_surf = pygame.transform.smoothscale(img_surf, (scaled_sz, scaled_sz))
+                if is_receptor and ("receptors" not in assets or direction not in assets["receptors"]):
+                    drawn_surf.fill((255, 255, 255, 120), special_flags=pygame.BLEND_RGBA_MULT)
+                surface.blit(drawn_surf, (int(x - scaled_sz // 2), int(y - scaled_sz // 2)))
+                return
+
+        # Vector fallback rendering
+        lane_color = self.get_lane_color(direction, theme)
         pulse_scale = 1.0 + (0.15 * active_pulse)
         scale *= pulse_scale
         size = int(24 * scale)
 
-        # ----------------- RETRO PIXEL THEME -----------------
-        if theme == "Retro-Pixel":
-            points = self.get_arrow_points(direction, x, y, scale)
-            if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.45)) for c in lane_color)
-                pygame.draw.polygon(surface, col, points, width=3)
-            else:
-                pygame.draw.polygon(surface, lane_color, points)
-                pygame.draw.rect(surface, (255, 255, 255), (x - 3, y - 3, 6, 6))
+        if is_receptor:
+            body_color = (255, 255, 255)
+        else:
+            body_color = note_color if note_color is not None else (255, 255, 255)
 
-        # ----------------- FUTURISTIC THEME -----------------
-        elif theme == "Futuristic":
-            points = self.get_arrow_points(direction, x, y, scale)
-            if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.6)) for c in lane_color)
-                pygame.draw.polygon(surface, col, points, width=3)
-            else:
-                pygame.draw.polygon(surface, lane_color, points)
-                pygame.draw.polygon(surface, (255, 255, 255), points, width=2)
-                inner_pts = self.get_arrow_points(direction, x, y, scale * 0.5)
-                pygame.draw.polygon(surface, (0, 255, 204), inner_pts, width=1)
+        outline_color = (15, 15, 18)
 
-        # ----------------- KAWAII PINK THEME -----------------
-        elif theme == "Kawaii-Pink":
-            points = self.get_arrow_points(direction, x, y, scale)
-            if is_receptor:
-                col = (255, 105, 180) if active_pulse > 0 else tuple(max(0, int(c * 0.8)) for c in lane_color)
-                pygame.draw.polygon(surface, col, points, width=3)
-            else:
-                pygame.draw.polygon(surface, lane_color, points)
-                self.draw_heart_shape(surface, (255, 255, 255), x, y, size * 0.5)
-
-        # ----------------- NEKO PIXEL THEME -----------------
-        elif theme == "Neko-Pixel":
-            points = self.get_arrow_points(direction, x, y, scale)
-            if is_receptor:
-                col = (255, 255, 255) if active_pulse > 0 else tuple(max(0, int(c * 0.55)) for c in lane_color)
-                pygame.draw.polygon(surface, col, points, width=3)
-            else:
-                pygame.draw.polygon(surface, lane_color, points)
-                # Draw kitty ears pointing upwards on top of the note
-                left_ear = [(x - 14*scale, y - 8*scale), (x - 6*scale, y - 8*scale), (x - 14*scale, y - 18*scale)]
-                right_ear = [(x + 14*scale, y - 8*scale), (x + 6*scale, y - 8*scale), (x + 14*scale, y - 18*scale)]
-                pygame.draw.polygon(surface, lane_color, left_ear)
-                pygame.draw.polygon(surface, lane_color, right_ear)
-                pygame.draw.polygon(surface, (255, 180, 200), [(x - 12*scale, y - 8*scale), (x - 8*scale, y - 8*scale), (x - 12*scale, y - 14*scale)])
-                pygame.draw.polygon(surface, (255, 180, 200), [(x + 12*scale, y - 8*scale), (x + 8*scale, y - 8*scale), (x + 12*scale, y - 14*scale)])
-                pygame.draw.rect(surface, (10, 10, 10), (x - 1, y, 2, 2))
-
-        # ----------------- NATIVE ARCHETYPES -----------------
-        elif theme == "Guitar-Hero" or settings.game_mode == "Guitar Hero":
+        if theme == "Guitar-Hero" or settings.game_mode == "Guitar Hero":
             radius = int(24 * scale)
             if is_receptor:
-                pygame.draw.circle(surface, (60, 60, 60), (int(x), int(y)), radius + 2, width=3)
-                pygame.draw.circle(surface, lane_color, (int(x), int(y)), radius, width=4)
-                if active_pulse > 0:
-                    pygame.draw.circle(surface, (255, 255, 255), (int(x), int(y)), radius - 6)
-                    pygame.draw.circle(surface, lane_color, (int(x), int(y)), radius - 2)
-                else:
-                    pygame.draw.circle(surface, (80, 80, 80), (int(x), int(y)), 5)
-                # Render G, R, Y, B, O letters in receptor center
-                labels = ["G", "R", "Y", "B", "O"]
-                label_char = labels[direction % 5]
-                lbl_font = pygame.font.SysFont("Trebuchet MS", 12, bold=True)
-                lbl_surf = lbl_font.render(label_char, True, (255, 255, 255))
-                surface.blit(lbl_surf, (int(x - lbl_surf.get_width() // 2), int(y - lbl_surf.get_height() // 2)))
+                pygame.draw.circle(surface, lane_color, (int(x), int(y)), radius + 5)
+                pygame.draw.circle(surface, outline_color, (int(x), int(y)), radius + 2)
+                pygame.draw.circle(surface, (255, 255, 255), (int(x), int(y)), radius - 1)
+                pygame.draw.circle(surface, lane_color, (int(x), int(y)), radius - 8, width=3)
             else:
-                pygame.draw.circle(surface, (20, 20, 20), (int(x), int(y)), radius + 1)
-                pygame.draw.circle(surface, lane_color, (int(x), int(y)), radius)
-                pygame.draw.circle(surface, (255, 255, 255), (int(x - 5), int(y - 5)), int(radius * 0.4))
-                
-        elif theme == "DDR-Retro":
-            points = self.get_arrow_points(direction, x, y, scale)
+                pygame.draw.circle(surface, outline_color, (int(x), int(y)), radius + 2)
+                pygame.draw.circle(surface, body_color, (int(x), int(y)), radius)
+                pygame.draw.circle(surface, (255, 255, 255), (int(x), int(y)), radius - 6, width=2)
+
+        elif theme == "Kawaii-Pink":
             if is_receptor:
-                outline_color = (255, 255, 255) if active_pulse > 0 else lane_color
-                glow_points = self.get_arrow_points(direction, x, y, scale * 1.05)
-                pygame.draw.polygon(surface, lane_color, glow_points, width=2)
-                pygame.draw.polygon(surface, outline_color, points, width=3)
+                self.draw_heart_shape(surface, lane_color, x, y, size * 1.25)
+                self.draw_heart_shape(surface, outline_color, x, y, size * 1.1)
+                self.draw_heart_shape(surface, (255, 255, 255), x, y, size)
             else:
-                pygame.draw.polygon(surface, lane_color, points)
-                highlight_pts = self.get_arrow_points(direction, x, y, scale * 0.8)
-                pygame.draw.polygon(surface, (255, 255, 255), highlight_pts, width=2)
-                
+                self.draw_heart_shape(surface, outline_color, x, y, size * 1.1)
+                self.draw_heart_shape(surface, body_color, x, y, size)
+                self.draw_heart_shape(surface, (255, 255, 255), x, y, size * 0.6)
+
+        elif theme == "Neko-Pixel":
+            points_outer = self.get_arrow_points(direction, x, y, scale * 1.15)
+            points_mid = self.get_arrow_points(direction, x, y, scale)
+            points_inner = self.get_arrow_points(direction, x, y, scale * 0.7)
+            
+            left_ear = [(x - 14*scale, y - 8*scale), (x - 6*scale, y - 8*scale), (x - 14*scale, y - 18*scale)]
+            right_ear = [(x + 14*scale, y - 8*scale), (x + 6*scale, y - 8*scale), (x + 14*scale, y - 18*scale)]
+            pygame.draw.polygon(surface, outline_color, [(p[0], p[1]-1) for p in left_ear])
+            pygame.draw.polygon(surface, outline_color, [(p[0], p[1]-1) for p in right_ear])
+            
+            ear_color = lane_color if is_receptor else body_color
+            pygame.draw.polygon(surface, ear_color, left_ear)
+            pygame.draw.polygon(surface, ear_color, right_ear)
+            
+            if is_receptor:
+                pygame.draw.polygon(surface, lane_color, points_outer)
+                pygame.draw.polygon(surface, outline_color, points_mid)
+                pygame.draw.polygon(surface, (255, 255, 255), points_inner)
+            else:
+                pygame.draw.polygon(surface, outline_color, points_outer)
+                pygame.draw.polygon(surface, body_color, points_mid)
+                pygame.draw.polygon(surface, (255, 255, 255), points_inner, width=2)
+
         else:
-            # Minimalist Theme
-            points = self.get_arrow_points(direction, x, y, scale)
+            points_glow = self.get_arrow_points(direction, x, y, scale * 1.3)
+            points_outer = self.get_arrow_points(direction, x, y, scale * 1.15)
+            points_mid = self.get_arrow_points(direction, x, y, scale)
+            points_inner = self.get_arrow_points(direction, x, y, scale * 0.7)
+
             if is_receptor:
-                color = self.get_accent_color("Minimalist") if active_pulse > 0 else tuple(max(0, int(c * 0.85)) for c in lane_color)
-                pygame.draw.polygon(surface, color, points, width=2)
-                pygame.draw.circle(surface, color, (int(x), int(y)), int(4 * scale))
+                pygame.draw.polygon(surface, lane_color, points_glow, width=3)
+                pygame.draw.polygon(surface, outline_color, points_outer)
+                pygame.draw.polygon(surface, (255, 255, 255), points_mid)
+                pygame.draw.polygon(surface, lane_color, points_inner, width=2)
             else:
-                color = lane_color
-                pygame.draw.polygon(surface, color, points)
+                pygame.draw.polygon(surface, outline_color, points_outer)
+                pygame.draw.polygon(surface, body_color, points_mid)
+                pygame.draw.polygon(surface, (255, 255, 255), points_inner, width=2)
 
     def draw_background_grid(self, surface, theme, beat_progress=0.0):
         w, h = surface.get_size()
         
+        # Check for custom background image
+        assets = self.custom_theme_assets.get(theme)
+        if assets and "bg_image" in assets:
+            bg_surf = assets["bg_image"]
+            if bg_surf.get_size() != (w, h):
+                assets["bg_image"] = pygame.transform.smoothscale(bg_surf, (w, h))
+                bg_surf = assets["bg_image"]
+            surface.blit(bg_surf, (0, 0))
+            
+            # Subtle scrolling grid lines overlay
+            for gx in range(w // 2 - 200, w // 2 + 201, 100):
+                pygame.draw.line(surface, (60, 55, 75, 40), (gx, 0), (gx, h), 1)
+            scroll_y = int((beat_progress % 1.0) * 80)
+            for gy in range(scroll_y, h, 80):
+                pygame.draw.line(surface, (60, 55, 75, 25), (0, gy), (w, gy), 1)
+            return
+
         if theme == "DDR-Retro":
             grid_color = (30, 20, 50)
             beat_pulse = int(10 * math.sin(beat_progress * math.pi))
@@ -317,7 +439,6 @@ class ThemeManager:
                 pygame.draw.line(surface, y_color, (0, y), (w, y), 1)
 
         elif theme == "Retro-Pixel":
-            # Twinkling pixel stars that pulse to the beat
             random.seed(42)
             for i in range(15):
                 star_x = int((random.random() * 0.9 + 0.05) * w)
@@ -326,19 +447,15 @@ class ThemeManager:
                 if twinkle > 0.4:
                     col = (0, 255, 204) if i % 2 == 0 else (255, 0, 128)
                     pygame.draw.rect(surface, col, (star_x, star_y, 6, 6))
-            # Chunky pixel horizontal grid
             grid_y_start = int((beat_progress % 1.0) * 60)
             for gy in range(grid_y_start, h, 60):
                 pygame.draw.line(surface, (40, 30, 60), (0, gy), (w, gy), 2)
 
         elif theme == "Futuristic":
-            # Perspective Synthwave horizon at Y = 250
             horizon_y = 250
             pygame.draw.rect(surface, (10, 5, 20), (0, 0, w, h))
-            # Magenta laser horizon glow
             pygame.draw.line(surface, (255, 0, 128), (0, horizon_y), (w, horizon_y), 3)
             
-            # Radiating laser lines from horizon center
             num_lines = 14
             for i in range(num_lines):
                 angle = math.pi * (0.1 + 0.8 * (i / (num_lines - 1)))
@@ -346,7 +463,6 @@ class ThemeManager:
                 end_y = horizon_y + 1000 * math.sin(angle)
                 pygame.draw.line(surface, (0, 255, 204), (w // 2, horizon_y), (end_x, end_y), 1)
                 
-            # Scroll horizontal lines down exponentially
             scroll = (beat_progress % 1.0)
             for i in range(12):
                 y_factor = ((i + scroll) / 12.0) ** 2.0
@@ -356,7 +472,6 @@ class ThemeManager:
                 pygame.draw.line(surface, col, (0, line_y), (w, line_y), 2)
 
         elif theme == "Kawaii-Pink":
-            # Floating hearts bobbing
             random.seed(123)
             for i in range(12):
                 x_pos = int((random.random() * 0.9 + 0.05) * w)
@@ -365,7 +480,6 @@ class ThemeManager:
                 self.draw_heart_shape(surface, (255, 180, 200), x_pos + bob, y_pos, 22)
 
         elif theme == "Neko-Pixel":
-            # Twinkling paws bobbing to the beat
             random.seed(999)
             for i in range(10):
                 px_x = int((random.random() * 0.8 + 0.1) * w)

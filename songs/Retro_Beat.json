@@ -3651,5 +3651,571 @@
                 "type": "single"
             }
         ]
+    },
+    "fnf": {
+        "player_1": [
+            {
+                "time": 4.004,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 4.503,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 5.002,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 5.501,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 6.001,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 6.5,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 6.999,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 7.498,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 11.991,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 12.49,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 12.989,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 13.489,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 13.988,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 14.487,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 14.986,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 15.485,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 15.984706714368915,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 16.483916299192945,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 16.983125884016975,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 17.482335468841004,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 17.98154505366503,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 18.48075463848906,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 18.97996422331309,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 19.479173808137116,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 19.978383392961145,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 20.477592977785175,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 20.976802562609205,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 21.47601214743323,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 21.97522173225726,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 22.47443131708129,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 22.973640901905316,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 23.472850486729346,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 27.966,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 28.465,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 28.964,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 29.463,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 29.963,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 30.462,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 30.961,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 31.46,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            }
+        ],
+        "player_2": [
+            {
+                "time": 0.01,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 0.5092095848240286,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 1.0084191696480571,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 1.5076287544720859,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 2.0068383392961144,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 2.5060479241201428,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 3.0052575089441715,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 3.5044670937682,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 7.9973533571844575,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 8.496562942008486,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 8.995772526832514,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 9.494982111656544,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 9.994191696480572,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 10.493401281304601,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 10.99261086612863,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 11.491820450952657,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 15.984706714368915,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 16.483916299192945,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 16.983125884016975,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 17.482335468841004,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 17.98154505366503,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 18.48075463848906,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 18.97996422331309,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 19.479173808137116,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 19.978383392961145,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 20.477592977785175,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 20.976802562609205,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 21.47601214743323,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 21.97522173225726,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 22.47443131708129,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 22.973640901905316,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 23.472850486729346,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 23.972060071553376,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 24.4712696563774,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 24.97047924120143,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 25.46968882602546,
+                "lanes": [
+                    1
+                ],
+                "type": "single"
+            },
+            {
+                "time": 25.96889841084949,
+                "lanes": [
+                    0
+                ],
+                "type": "single"
+            },
+            {
+                "time": 26.468107995673517,
+                "lanes": [
+                    3
+                ],
+                "type": "single"
+            },
+            {
+                "time": 26.967317580497546,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            },
+            {
+                "time": 27.466527165321576,
+                "lanes": [
+                    2
+                ],
+                "type": "single"
+            }
+        ]
     }
 }

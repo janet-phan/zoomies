@@ -1,6 +1,7 @@
 import pygame
 import time
 import random
+import colorsys
 import math
 import os
 import numpy as np
@@ -143,11 +144,14 @@ class PlayerState:
         
         self.score = 0
         self.combo = 0
+        self.combo_pop = 1.0
         self.max_combo = 0
         self.perfects = 0
         self.greats = 0
         self.goods = 0
         self.misses = 0
+        self.consecutive_misses = 0
+        self.timing_offsets = []
         
         # VTuber character images & animation state
         self.char_state = "idle"
@@ -167,6 +171,7 @@ class PlayerState:
         self.last_judgment = ""
         self.last_judgment_color = (255, 255, 255)
         self.judgment_flash_timer = 0.0
+        self.paw_stamp_timer = 0.0
 
     def load_character_images(self):
         char_dir = os.path.join(settings.CHARACTERS_DIR, self.character_name)
@@ -264,11 +269,11 @@ class Gameplay:
         if min(abs(fraction - 1/6), abs(fraction - 5/6)) < tol:
             return (255, 60, 180) # 24th: Magenta
         if min(abs(fraction - 0.125), abs(fraction - 0.375), abs(fraction - 0.625), abs(fraction - 0.875)) < tol:
-            return (255, 128, 0) # 32nd: Orange
+            return (50, 220, 100) # 32nd: Green
             
         for sixteenth in [1/16, 3/16, 5/16, 7/16, 9/16, 11/16, 13/16, 15/16]:
             if abs(fraction - sixteenth) < tol:
-                return (50, 220, 100) # 64th: Green
+                return (255, 128, 0) # 64th/Other: Orange
                 
         return None
 
@@ -303,37 +308,56 @@ class Gameplay:
             for _ in range(8):
                 self.particles.append(Particle(x, y, p_color, p_type="circle"))
 
-    def __init__(self, song_metadata, difficulty, character_name="Miku"):
+    def __init__(self, song_metadata, difficulty, character_name="Miku", player_is_ai=None, practice_start_measure=None, practice_end_measure=None):
         self.metadata = song_metadata
         self.difficulty = difficulty
-        self.is_dynamic = (difficulty == "Dynamic")
+        self.is_dynamic = (difficulty == "Dynamic" if isinstance(difficulty, str) else False)
         self.all_charts = song_metadata["charts"]
         self.bpm = song_metadata["bpm"]
         self.song_filename = song_metadata["filename"]
         
-        # Speed scaling
-        self.speed_multiplier = 1.0
-        if self.difficulty == "Harder":
-            self.speed_multiplier = 1.15
-        elif self.difficulty == "Crazy":
-            self.speed_multiplier = 1.50
-            
+        # Practice Mode measure range
+        self.practice_start_measure = practice_start_measure
+        self.practice_end_measure = practice_end_measure
+        if self.practice_start_measure is not None:
+            beat_interval = 60.0 / self.bpm
+            self.practice_start_time = float(self.practice_start_measure * 4.0 * beat_interval)
+            self.practice_end_time = float(self.practice_end_measure * 4.0 * beat_interval)
+        else:
+            self.practice_start_time = 0.0
+            self.practice_end_time = None
+        
+        # Speed scaling from settings
+        self.speed_multiplier = getattr(settings, "playback_speed", 1.0)
         if self.speed_multiplier != 1.0:
             self.song_filename = get_or_create_speed_audio(self.song_filename, self.speed_multiplier)
+            self.bpm = self.bpm * self.speed_multiplier
             
         self.song_path = pygame.mixer.music.load(os.path.join(settings.SONGS_DIR, self.song_filename))
         sound_helper.init_sounds()
         
-        # Baseline chart
-        if self.is_dynamic:
-            self.baseline_chart = song_metadata["charts"]["Medium"]
-        else:
-            self.baseline_chart = song_metadata["charts"][difficulty]
-            
-        # Modes
         raw_mode = settings.game_mode
         self.players_count = settings.players
         
+        # Check FNF chart presence and generate if missing
+        if raw_mode == "FNF":
+            if "fnf" not in song_metadata:
+                print("FNF chart not found in metadata. Generating call-and-response charts on-the-fly...")
+                from song_analyzer import SongAnalyzer
+                analyzer = SongAnalyzer()
+                song_metadata["fnf"] = analyzer.generate_fnf_chart(song_metadata)
+                
+                # Save back to JSON
+                json_path = os.path.join(settings.SONGS_DIR, song_metadata["filename"].rsplit('.', 1)[0] + ".json")
+                if os.path.exists(json_path):
+                    import json
+                    try:
+                        with open(json_path, "w") as f:
+                            json.dump(song_metadata, f, indent=4)
+                        print(f"Saved FNF charts to {json_path}!")
+                    except Exception as e:
+                        print(f"Error saving updated FNF charts: {e}")
+                        
         # Translate settings game modes to internal gameplay mode states
         if raw_mode == "FNF":
             self.game_mode = "Versus"
@@ -358,19 +382,22 @@ class Gameplay:
             self.lane_spacing = 8
         elif self.players_count == 3:
             self.lane_width = 58
-            self.lane_spacing = 12
-        elif self.players_count == 2:
-            self.lane_width = 72
-            self.lane_spacing = 18
+            self.lane_spacing = 14
         else:
             self.lane_width = 82
             self.lane_spacing = 22
             
         self.total_width = (self.lane_width * self.num_lanes) + (self.lane_spacing * (self.num_lanes - 1))
         
-        # Lock chart to default 4 lanes
-        self.chart = [dict(note) for note in self.baseline_chart]
+        # Determine player difficulties and load corresponding charts
+        if isinstance(difficulty, str):
+            self.difficulties_list = [difficulty] * self.players_count
+        else:
+            self.difficulties_list = difficulty
             
+        self.player_is_ai = player_is_ai if player_is_ai is not None else [False] * self.players_count
+        self.ai_release_times = {}
+        
         # Layout positioning
         self.is_downscroll = (settings.theme == "Guitar-Hero")
         self.receptor_y = 620 if self.is_downscroll else 120
@@ -386,11 +413,37 @@ class Gameplay:
         ]
         
         for p_idx in range(self.players_count):
-            c_x = int((SCREEN_WIDTH / (self.players_count + 1)) * (p_idx + 1))
+            if raw_mode == "FNF":
+                p_diff = self.difficulties_list[p_idx]
+                p_is_dynamic = False
+                p_track_name = "player_1" if p_idx == 0 else "player_2"
+                p_baseline = song_metadata.get("fnf", {}).get(p_track_name, [])
+            else:
+                p_diff = self.difficulties_list[p_idx]
+                p_is_dynamic = (p_diff == "Dynamic")
+                if p_is_dynamic:
+                    p_baseline = song_metadata["charts"]["Medium"]
+                else:
+                    p_baseline = song_metadata["charts"].get(p_diff, song_metadata["charts"].get("Medium", []))
+                    
+            p_chart = []
+            for note in p_baseline:
+                n_copy = dict(note)
+                if self.speed_multiplier != 1.0:
+                    n_copy["time"] = float(round(n_copy["time"] / self.speed_multiplier, 3))
+                    if "endtime" in n_copy:
+                        n_copy["endtime"] = float(round(n_copy["endtime"] / self.speed_multiplier, 3))
+                p_chart.append(n_copy)
+                
+            if self.players_count == 2:
+                c_x = 270 if p_idx == 0 else 730
+            else:
+                c_x = int((SCREEN_WIDTH / (self.players_count + 1)) * (p_idx + 1))
             start_x = c_x - self.total_width // 2
             lane_x = [start_x + i * (self.lane_width + self.lane_spacing) + self.lane_width // 2 for i in range(self.num_lanes)]
             char_name = char_names[p_idx % len(char_names)]
-            self.players.append(PlayerState(self.chart, lane_x, char_name, p_idx, self.bpm, self.difficulty, self.is_dynamic))
+            
+            self.players.append(PlayerState(p_chart, lane_x, char_name, p_idx, self.bpm, p_diff, p_is_dynamic))
             
         # Particle effects
         self.particles = []
@@ -409,6 +462,8 @@ class Gameplay:
         self.paused = False
         self.pause_start_time = 0
         self.elapsed_pause_time = 0
+        self.shake_timer = 0.0
+        self.shake_intensity = 0.0
         self.intro_delay = 2.0
         self.intro_start_time = time.time()
         self.game_over = False
@@ -416,19 +471,45 @@ class Gameplay:
         
         # Held frets for guitar strum bar logic
         self.held_frets = {p_idx: [False] * self.num_lanes for p_idx in range(self.players_count)}
+        self.assist_tick_notif_timer = 0.0
 
     def start_music(self):
         pygame.mixer.music.set_volume(settings.music_volume)
-        pygame.mixer.music.play()
-        self.start_time = time.time()
+        if getattr(self, "practice_start_time", 0.0) > 0.0:
+            pygame.mixer.music.play(start=self.practice_start_time)
+            self.start_time = time.time() - self.practice_start_time
+        else:
+            pygame.mixer.music.play()
+            self.start_time = time.time()
         self.song_started = True
+
+    def reset_practice_loop(self):
+        print("Practice measure range reached. Looping section...")
+        pygame.mixer.music.stop()
+        for p in self.players:
+            for note in p.notes:
+                note["hit"] = False
+                note["missed"] = False
+                if "ticked" in note:
+                    del note["ticked"]
+                if "ai_handled" in note:
+                    del note["ai_handled"]
+                if "ai_hit_time" in note:
+                    del note["ai_hit_time"]
+            p.combo = 0
+            
+        pygame.mixer.music.play(start=self.practice_start_time)
+        self.start_time = time.time() - self.practice_start_time
+        self.elapsed_pause_time = 0
 
     def get_current_time(self):
         if not self.song_started:
             return 0
         if self.paused:
-            return self.pause_start_time - self.start_time - self.elapsed_pause_time
-        return time.time() - self.start_time - self.elapsed_pause_time
+            base_t = self.pause_start_time - self.start_time - self.elapsed_pause_time
+        else:
+            base_t = time.time() - self.start_time - self.elapsed_pause_time
+        return base_t + settings.audio_offset
 
     def toggle_pause(self):
         if self.game_over:
@@ -504,22 +585,79 @@ class Gameplay:
                 color = (200, 200, 50)
                 score_gain = settings.SCORE_GOOD
                 
+                # Check for Proportional Scoring
+                use_prop = getattr(settings, "proportional_scoring", False)
+                
                 if best_diff <= TIMING_PERFECT:
                     rating = "PERFECT"
                     color = (0, 255, 204)
-                    score_gain = settings.SCORE_PERFECT
+                    if use_prop:
+                        # Scale linearly between Great (500) and Perfect (1000)
+                        pct = 1.0 - (best_diff / TIMING_PERFECT)
+                        score_gain = settings.SCORE_GREAT + int(pct * (settings.SCORE_PERFECT - settings.SCORE_GREAT))
+                    else:
+                        score_gain = settings.SCORE_PERFECT
                     p.perfects += 1
                 elif best_diff <= TIMING_GREAT:
                     rating = "GREAT"
                     color = (255, 215, 0)
-                    score_gain = settings.SCORE_GREAT
+                    if use_prop:
+                        # Scale linearly between Good (200) and Great (500)
+                        range_len = TIMING_GREAT - TIMING_PERFECT
+                        pct = 1.0 - ((best_diff - TIMING_PERFECT) / range_len) if range_len > 0 else 1.0
+                        score_gain = settings.SCORE_GOOD + int(pct * (settings.SCORE_GREAT - settings.SCORE_GOOD))
+                    else:
+                        score_gain = settings.SCORE_GREAT
                     p.greats += 1
                 else:
+                    if use_prop:
+                        # Scale linearly between 0 and Good (200)
+                        range_len = TIMING_GOOD - TIMING_GREAT
+                        pct = 1.0 - ((best_diff - TIMING_GREAT) / range_len) if range_len > 0 else 1.0
+                        score_gain = int(pct * settings.SCORE_GOOD)
+                    else:
+                        score_gain = settings.SCORE_GOOD
                     p.goods += 1
                     
+                # Save signed offset (negative = early, positive = late)
+                offset = curr_time - best_note["time"]
+                p.timing_offsets.append({"offset": offset, "rating": rating, "time": best_note["time"]})
+                
+                # Format early/late sign judgment string
+                rating_label = "PERFECT!" if rating == "PERFECT" else rating
+                if offset < -0.005:  # more than 5ms early
+                    rating_display = f"← {rating_label}"
+                elif offset > 0.005:  # more than 5ms late
+                    rating_display = f"{rating_label} →"
+                else:
+                    rating_display = rating_label
+                
                 best_note["hit"] = True
                 p.score += score_gain
                 p.combo += 1
+                
+                # Check combo milestones
+                if p.combo in [10, 50, 100, 200, 300, 500]:
+                    if p.combo == 50:
+                        self.shake_timer = 0.2
+                        self.shake_intensity = 4.0
+                    elif p.combo == 100:
+                        self.shake_timer = 0.3
+                        self.shake_intensity = 8.0
+                    elif p.combo == 200:
+                        self.shake_timer = 0.35
+                        self.shake_intensity = 10.0
+                    elif p.combo == 300:
+                        self.shake_timer = 0.4
+                        self.shake_intensity = 12.0
+                        p.paw_stamp_timer = 1.0 # Trigger cute paw stamp popup
+                    elif p.combo == 500:
+                        self.shake_timer = 0.5
+                        self.shake_intensity = 16.0
+                        p.paw_stamp_timer = 1.2
+                
+                p.combo_pop = 1.4
+                p.consecutive_misses = 0
                 if p.combo > p.max_combo:
                     p.max_combo = p.combo
                     
@@ -534,16 +672,12 @@ class Gameplay:
                 y = self.receptor_y
                 self.spawn_hit_particles(x, y, direction_idx, rating)
                     
-                p.trigger_judgment(rating, color)
+                p.trigger_judgment(rating_display, color)
                 
-                # Dynamic mode scale (P1 only)
+                # Dynamic mode scale (P1 only) - move up every 10 combo
                 if p.player_idx == 0 and p.is_dynamic:
-                    if p.combo == 20:
-                        self.change_dynamic_difficulty(2)
-                    elif p.combo == 50:
-                        self.change_dynamic_difficulty(3)
-                    elif p.combo == 100:
-                        self.change_dynamic_difficulty(4)
+                    if p.combo > 0 and p.combo % 10 == 0:
+                        self.change_dynamic_difficulty(min(5, p.current_dynamic_idx + 1))
             else:
                 p.set_char_state("umm", 0.8)
         else:
@@ -557,6 +691,12 @@ class Gameplay:
                     active_hold["missed"] = True
                     p.misses += 1
                     p.combo = 0
+                    
+                    # Deduct miss penalty
+                    penalty = getattr(settings, "miss_penalty", 0)
+                    if penalty > 0:
+                        p.score = max(0, p.score - penalty)
+                        
                     p.set_char_state("miss", 1.0)
                     p.trigger_judgment("HOLD MISS", (220, 50, 50))
                     sound_helper.play_miss()
@@ -571,6 +711,9 @@ class Gameplay:
         # Update character states & receptor pulses
         for p in self.players:
             p.char_pop = max(0.0, p.char_pop - dt * 4.0)
+            p.combo_pop = max(1.0, p.combo_pop - dt * 6.0)
+            p.paw_stamp_timer = max(0.0, p.paw_stamp_timer - dt)
+            p.judgment_flash_timer = max(0.0, p.judgment_flash_timer - dt)
             if p.char_state != "idle":
                 p.char_state_timer -= dt
                 if p.char_state_timer <= 0:
@@ -580,6 +723,10 @@ class Gameplay:
                     p.receptor_pulse[i] = 1.0
                 else:
                     p.receptor_pulse[i] = max(0.0, p.receptor_pulse[i] - dt * 7.0)
+                    
+        # Update screen shake timer
+        if getattr(self, "shake_timer", 0.0) > 0.0:
+            self.shake_timer = max(0.0, self.shake_timer - dt)
                     
         # Update background particles
         for bp in self.bg_particles:
@@ -594,6 +741,10 @@ class Gameplay:
             if part.alpha <= 0:
                 self.particles.remove(part)
                 
+        # Update notification timers
+        if self.assist_tick_notif_timer > 0:
+            self.assist_tick_notif_timer = max(0.0, self.assist_tick_notif_timer - dt)
+                
         if not self.song_started:
             if time.time() - self.intro_start_time >= self.intro_delay:
                 self.start_music()
@@ -604,33 +755,124 @@ class Gameplay:
             
         curr_time = self.get_current_time()
         
+        # Practice Mode measure loop check
+        if getattr(self, "practice_end_time", None) is not None:
+            if curr_time >= self.practice_end_time:
+                self.reset_practice_loop()
+                return
+        
+        # Dynamic Mode evaluation every 8 measures (32 beats)
+        if self.is_dynamic:
+            beat_pos = curr_time * (self.bpm / 60.0)
+            phrase_idx = int(beat_pos // 32)
+            if not hasattr(self, "last_evaluated_phrase"):
+                self.last_evaluated_phrase = 0
+                
+            if phrase_idx > self.last_evaluated_phrase:
+                self.last_evaluated_phrase = phrase_idx
+                for p in self.players:
+                    if p.player_idx == 0:
+                        total_hits = p.perfects + p.greats + p.goods + p.misses
+                        if total_hits > 0:
+                            accuracy = p.perfects / total_hits
+                            if accuracy > 0.95:
+                                self.change_dynamic_difficulty(min(5, p.current_dynamic_idx + 1))
+                            elif accuracy < 0.80:
+                                self.change_dynamic_difficulty(max(1, p.current_dynamic_idx - 1))
+        
+        # AI Autoplay logic
+        if hasattr(self, "player_is_ai"):
+            for p_idx, is_ai in enumerate(self.player_is_ai):
+                if is_ai:
+                    p = self.players[p_idx]
+                    
+                    # 1. Trigger key presses when the notes are ready
+                    for note in p.notes:
+                        if not note["hit"] and not note["missed"] and not note.get("ai_handled", False):
+                            if "ai_hit_time" not in note:
+                                is_miss = False
+                                if p.difficulty == "Easy":
+                                    range_val = 0.060
+                                    is_miss = (random.random() < 0.15)
+                                elif p.difficulty == "Medium":
+                                    range_val = 0.035
+                                    is_miss = (random.random() < 0.05)
+                                elif p.difficulty == "Hard":
+                                    range_val = 0.018
+                                    is_miss = (random.random() < 0.01)
+                                else:
+                                    range_val = 0.008
+                                    is_miss = False
+                                    
+                                if is_miss:
+                                    note["ai_hit_time"] = note["time"] + 1.0
+                                else:
+                                    note["ai_hit_time"] = note["time"] + random.uniform(-range_val, range_val)
+                                    
+                            if curr_time >= note["ai_hit_time"] and note["ai_hit_time"] < note["time"] + TIMING_GOOD:
+                                note["ai_handled"] = True
+                                for lane in note["lanes"]:
+                                    self.trigger_input(lane, is_down=True, player_idx=p_idx)
+                                    if note["type"] == "hold":
+                                        self.ai_release_times[(p_idx, lane)] = note["endtime"]
+                                    else:
+                                        self.ai_release_times[(p_idx, lane)] = curr_time + 0.100
+                                        
+                    # 2. Release keys when their release time is reached
+                    for (ai_p, lane), rel_t in list(self.ai_release_times.items()):
+                        if ai_p == p_idx and curr_time >= rel_t:
+                            self.trigger_input(lane, is_down=False, player_idx=p_idx)
+                            del self.ai_release_times[(ai_p, lane)]
+                            
         # Standard Highway Tap/Hold loops for all players
+        should_play_clap = False
         for p in self.players:
+            # Play assist tick clap when a note reaches receptor
+            for note in p.notes:
+                if not note.get("ticked"):
+                    if curr_time >= note["time"]:
+                        note["ticked"] = True
+                        should_play_clap = True
+
             # Check misses and hold completions
             for note in p.notes:
                 if not note["hit"] and not note["missed"] and curr_time > note["time"] + TIMING_GOOD:
                     note["missed"] = True
                     p.misses += 1
                     p.combo = 0
+                    p.timing_offsets.append({"offset": -TIMING_GOOD, "rating": "MISS", "time": note["time"]})
+                    
+                    # Deduct miss penalty
+                    penalty = getattr(settings, "miss_penalty", 0)
+                    if penalty > 0:
+                        p.score = max(0, p.score - penalty)
+                        
                     p.trigger_judgment("MISS", (180, 50, 50))
                     p.set_char_state("miss", 1.0)
                     sound_helper.play_miss()
                     
                     if p.player_idx == 0 and p.is_dynamic:
-                        p.current_dynamic_idx = max(1, p.current_dynamic_idx - 1)
-                        self.change_dynamic_difficulty(p.current_dynamic_idx)
+                        p.consecutive_misses += 1
+                        if p.consecutive_misses >= 2:
+                            p.consecutive_misses = 0
+                            p.current_dynamic_idx = max(1, p.current_dynamic_idx - 1)
+                            self.change_dynamic_difficulty(p.current_dynamic_idx)
                             
-                # Continuous scoring for active holds
-                for lane, hold_note in p.active_holds.items():
-                    if hold_note is not None:
-                        if curr_time >= hold_note["endtime"]:
-                            gain = 500
-                            p.score += gain
-                            p.trigger_judgment("HOLD OK", (0, 255, 204))
-                            p.active_holds[lane] = None
-                        else:
-                            gain = int(100 * dt)
-                            p.score += gain
+        if should_play_clap and settings.assist_tick:
+            sound_helper.play_clap()
+
+        for p in self.players:
+            # Continuous scoring for active holds
+            for lane, hold_note in p.active_holds.items():
+                if hold_note is not None:
+                    if curr_time >= hold_note["endtime"]:
+                        gain = 500
+                        p.score += gain
+                        p.trigger_judgment("HOLD OK", (0, 255, 204))
+                        p.active_holds[lane] = None
+                    else:
+                        gain = int(100 * dt)
+                        p.score += gain
                             
         # Check if song finished
         if self.song_started and not pygame.mixer.music.get_busy() and not self.paused:
@@ -641,7 +883,7 @@ class Gameplay:
         bar_w = 400
         bar_h = 16
         bar_x = (w - bar_w) // 2
-        bar_y = 35
+        bar_y = h - 55
         
         pygame.draw.rect(surface, (25, 22, 32), (bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4), border_radius=6)
         
@@ -674,14 +916,19 @@ class Gameplay:
         pygame.draw.circle(surface, (255, 255, 255), (cursor_x, cursor_y), 9, width=2)
         
         # Versus title label
-        vs_font = pygame.font.SysFont("Impact", 18)
+        vs_font = pygame.font.SysFont("Impact", 14)
         vs_surf = vs_font.render("VERSUS BATTLE", True, (255, 255, 255))
-        surface.blit(vs_surf, (w // 2 - vs_surf.get_width() // 2, 10))
+        surface.blit(vs_surf, (w // 2 - vs_surf.get_width() // 2, bar_y - 20))
 
     def draw(self, surface):
         theme = settings.theme
         theme_manager.draw_background_grid(surface, theme, self.get_current_time() * (self.bpm / 60.0))
         
+        # Draw background particles with glowing cores
+        for bp in self.bg_particles:
+            pygame.draw.circle(surface, bp["color"], (int(bp["x"]), int(bp["y"])), int(bp["base_radius"]))
+            pygame.draw.circle(surface, (255, 255, 255), (int(bp["x"]), int(bp["y"])), max(1, int(bp["base_radius"] // 2.5)))
+            
         w, h = surface.get_size()
         curr_time = self.get_current_time()
         beat_progress = curr_time * (self.bpm / 60.0)
@@ -695,10 +942,7 @@ class Gameplay:
             glow_surf.fill(glow_col)
             surface.blit(glow_surf, (0, 0))
         
-        # Draw FNF battle bar in Versus mode
-        if self.game_mode == "Versus" and len(self.players) == 2:
-            self.draw_versus_bar(surface)
-            
+
         for p in self.players:
             # Draw highway backdrop panel
             hw_x = p.lane_x[0] - self.lane_width // 2 - 10
@@ -766,10 +1010,34 @@ class Gameplay:
                                 ty = int(start_y)
                                 
                             if th > 0:
-                                trail_surf = pygame.Surface((24, th), pygame.SRCALPHA)
-                                trail_surf.fill((trail_color[0], trail_color[1], trail_color[2], 130))
-                                surface.blit(trail_surf, (lx - 12, ty))
-                                pygame.draw.rect(surface, trail_color, (lx - 15, int(end_y) - 4, 30, 8), border_radius=2)
+                                # 1. Silver metallic hold base body
+                                hold_rect = pygame.Rect(lx - 18, ty, 36, th)
+                                pygame.draw.rect(surface, (40, 40, 46), hold_rect)
+                                pygame.draw.line(surface, (180, 180, 195), (lx - 18, ty), (lx - 18, ty + th), 3)
+                                pygame.draw.line(surface, (180, 180, 195), (lx + 17, ty), (lx + 17, ty + th), 3)
+                                pygame.draw.line(surface, (15, 15, 18), (lx - 15, ty), (lx - 15, ty + th), 1)
+                                pygame.draw.line(surface, (15, 15, 18), (lx + 14, ty), (lx + 14, ty + th), 1)
+                                
+                                # 2. Scroll chevrons inside the hold body
+                                chevron_spacing = 30
+                                first_y = ty + (chevron_spacing - (ty % chevron_spacing))
+                                for cy in range(first_y, ty + th - 8, chevron_spacing):
+                                    if self.is_downscroll:
+                                        pts = [(lx - 8, cy), (lx, cy + 6), (lx + 8, cy)]
+                                    else:
+                                        pts = [(lx - 8, cy + 6), (lx, cy), (lx + 8, cy + 6)]
+                                    pygame.draw.lines(surface, (15, 15, 18), False, pts, 3)
+                                    pygame.draw.lines(surface, (140, 140, 155), False, pts, 2)
+                                    
+                                    offset_y = 6 if self.is_downscroll else -6
+                                    pts2 = [(p[0], p[1] + offset_y) for p in pts]
+                                    pygame.draw.lines(surface, (15, 15, 18), False, pts2, 3)
+                                    pygame.draw.lines(surface, (120, 120, 135), False, pts2, 2)
+                                
+                                # 3. Hold tail / end cap (solid metallic bar with black outline)
+                                cap_y = int(end_y)
+                                pygame.draw.rect(surface, (15, 15, 18), (lx - 21, cap_y - 6, 42, 12), border_radius=3)
+                                pygame.draw.rect(surface, (180, 180, 195), (lx - 19, cap_y - 4, 38, 8), border_radius=2)
                             
             # Draw Note heads calling theme_manager.draw_arrow
             for note in p.notes:
@@ -788,20 +1056,63 @@ class Gameplay:
                             lx = p.lane_x[lane]
                             theme_manager.draw_arrow(surface, lx, y, lane, theme, scale=self.lane_width/80.0, is_receptor=False, note_color=n_col)
                                 
-            # Floating Judgment
+            # Floating Judgment (Juicy scale/bounce pops, floats, and fades)
             if p.last_judgment and p.judgment_flash_timer > 0:
-                p.judgment_flash_timer -= 0.016
                 font_hud = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 24, bold=True)
                 alpha = int(max(0, min(255, p.judgment_flash_timer * 255)))
                 
+                # Floating animation offset
+                float_offset = (1.0 - p.judgment_flash_timer) * 35.0
                 jx = p.lane_x[self.num_lanes // 2]
-                jy = self.receptor_y + (40 if self.is_downscroll else -45)
+                jy = self.receptor_y + (40 if self.is_downscroll else -45) + (float_offset if self.is_downscroll else -float_offset)
                 
                 txt_surf = font_hud.render(p.last_judgment, True, p.last_judgment_color)
+                
+                # Bounce pop effect
+                scale_factor = 1.0
+                if p.judgment_flash_timer > 0.8:
+                    t_pop = (1.0 - p.judgment_flash_timer) / 0.2
+                    scale_factor = 1.0 + math.sin(t_pop * math.pi) * 0.35
+                
+                scaled_w = int(txt_surf.get_width() * scale_factor)
+                scaled_h = int(txt_surf.get_height() * scale_factor)
+                if scaled_w > 0 and scaled_h > 0:
+                    txt_surf = pygame.transform.smoothscale(txt_surf, (scaled_w, scaled_h))
+                
                 alpha_surf = pygame.Surface(txt_surf.get_size(), pygame.SRCALPHA)
                 alpha_surf.fill((255, 255, 255, alpha))
                 alpha_surf.blit(txt_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
                 surface.blit(alpha_surf, (jx - alpha_surf.get_width() // 2, jy - alpha_surf.get_height() // 2))
+                
+            # Cute Cat Paw Stamp pop-in overlay
+            if getattr(p, "paw_stamp_timer", 0.0) > 0.0:
+                alpha = int(max(0, min(180, p.paw_stamp_timer * 180)))
+                paw_size = 140
+                paw_surf = pygame.Surface((paw_size, paw_size), pygame.SRCALPHA)
+                
+                # Main pad
+                px = paw_size // 2
+                py = paw_size // 2 + 10
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px, py), 35)
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px - 14, py + 8), 24)
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px + 14, py + 8), 24)
+                
+                # Four toes
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px - 32, py - 18), 15)
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px - 11, py - 32), 17)
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px + 11, py - 32), 17)
+                pygame.draw.circle(paw_surf, (255, 120, 150, alpha), (px + 32, py - 18), 15)
+                
+                # Cute white inner highlights
+                pygame.draw.circle(paw_surf, (255, 255, 255, alpha), (px, py), 12)
+                pygame.draw.circle(paw_surf, (255, 255, 255, alpha), (px - 32, py - 18), 5)
+                pygame.draw.circle(paw_surf, (255, 255, 255, alpha), (px - 11, py - 32), 6)
+                pygame.draw.circle(paw_surf, (255, 255, 255, alpha), (px + 11, py - 32), 6)
+                pygame.draw.circle(paw_surf, (255, 255, 255, alpha), (px + 32, py - 18), 5)
+                
+                # Blit to center of player's lanes
+                center_lane_x = p.lane_x[self.num_lanes // 2]
+                surface.blit(paw_surf, (center_lane_x - paw_size // 2, 320 - paw_size // 2))
                 
             # HUD details
             hud_font = pygame.font.SysFont("Impact" if theme in ["DDR-Retro", "Retro-Pixel"] else "Segoe UI", 16 if self.players_count > 2 else 20)
@@ -818,7 +1129,121 @@ class Gameplay:
             
             surface.blit(p_surf, (hx, hy))
             surface.blit(score_surf, (hx, hy + 22))
-            surface.blit(combo_surf, (hx, hy + 44))
+            # Hide small combo if it's solo and obnoxious combo is showing on the side
+            if self.players_count > 1:
+                surface.blit(combo_surf, (hx, hy + 44))
+            
+            # --- Obnoxious Large Flashing Combo on the Highway ---
+            if p.combo > 0:
+                hue = (time.time() * 2.0) % 1.0
+                rainbow_color = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue, 0.9, 1.0))
+                combo_color = rainbow_color if self.players_count == 1 else (255, 215, 0)
+                
+                base_font_size = int((36 + min(24, p.combo * 0.5)) * p.combo_pop)
+                combo_font = pygame.font.SysFont("Impact", base_font_size)
+                
+                num_surf = combo_font.render(str(p.combo), True, combo_color)
+                
+                label_size = int(14 * p.combo_pop)
+                lbl_font = pygame.font.SysFont("Impact", label_size)
+                lbl_surf = lbl_font.render("COMBO", True, (255, 255, 255) if theme != "Minimalist" else (45, 45, 55))
+                
+                # Render centered below/above the receptor line
+                cx = p.lane_x[self.num_lanes // 2]
+                cy = self.receptor_y + (160 if self.is_downscroll else -170)
+                
+                # Shadow offset
+                shadow_surf = combo_font.render(str(p.combo), True, (10, 10, 15))
+                surface.blit(shadow_surf, (cx - num_surf.get_width() // 2 + 2, cy - num_surf.get_height() // 2 + 2))
+                surface.blit(num_surf, (cx - num_surf.get_width() // 2, cy - num_surf.get_height() // 2))
+                surface.blit(lbl_surf, (cx - lbl_surf.get_width() // 2, cy + num_surf.get_height() // 2 - 2))
+                
+                # Combo Milestone Title Badge
+                combo_title = ""
+                badge_color = (255, 255, 255)
+                if p.combo >= 500:
+                    combo_title = "🐾 FURNITURE DESTROYED!"
+                    badge_color = (255, 45, 85)
+                elif p.combo >= 300:
+                    combo_title = "🐾 ORANGE CAT ENERGY"
+                    badge_color = (255, 120, 0)
+                elif p.combo >= 100:
+                    combo_title = "🐾 MAXIMUM ZOOMIES!"
+                    badge_color = (0, 255, 100)
+                elif p.combo >= 50:
+                    combo_title = "ZOOMING"
+                    badge_color = (0, 255, 204)
+                elif p.combo >= 10:
+                    combo_title = "WARMING UP"
+                    badge_color = (200, 200, 205)
+                    
+                if combo_title:
+                    title_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 12, bold=True)
+                    title_surf = title_font.render(combo_title, True, badge_color)
+                    surface.blit(title_surf, (cx - title_surf.get_width() // 2, cy + num_surf.get_height() // 2 + lbl_surf.get_height() + 5))
+                
+            # --- Left-Side Dynamic Mode HUD Panel ---
+            if self.players_count == 1 and p.is_dynamic:
+                pygame.draw.rect(surface, (15, 12, 22, 200), (25, 110, 240, 440), border_radius=10)
+                pygame.draw.rect(surface, (0, 255, 204), (25, 110, 240, 440), width=2, border_radius=10)
+                
+                dyn_title_font = pygame.font.SysFont("Impact", 22)
+                dyn_font = pygame.font.SysFont("Segoe UI", 16, bold=True)
+                val_font = pygame.font.SysFont("Trebuchet MS", 18, bold=True)
+                
+                hdr_surf = dyn_title_font.render("DYNAMIC MODE", True, (0, 255, 204))
+                surface.blit(hdr_surf, (45, 125))
+                pygame.draw.line(surface, (60, 50, 80), (35, 160), (255, 160), 2)
+                
+                level_lbl = dyn_font.render("DIFFICULTY LEVEL:", True, (200, 200, 210))
+                level_names = ["EASY", "MEDIUM", "HARD", "HARDER", "CRAZY"]
+                level_name = level_names[min(4, max(0, p.current_dynamic_idx - 1))]
+                level_colors = [(50, 205, 50), (0, 191, 255), (255, 165, 0), (255, 0, 128), (200, 0, 255)]
+                level_col = level_colors[min(4, max(0, p.current_dynamic_idx - 1))]
+                
+                level_surf = dyn_title_font.render(level_name, True, level_col)
+                surface.blit(level_lbl, (45, 170))
+                surface.blit(level_surf, (45, 192))
+                
+                # BPM Display
+                bpm_lbl = dyn_font.render("CURRENT BPM:", True, (200, 200, 210))
+                bpm_val_surf = dyn_title_font.render(f"{self.bpm:.2f}", True, (255, 255, 255))
+                surface.blit(bpm_lbl, (45, 230))
+                surface.blit(bpm_val_surf, (45, 252))
+                
+                prog_val = p.combo % 10
+                prog_pct = prog_val / 10.0
+                
+                bar_y = 295
+                pygame.draw.rect(surface, (45, 40, 55), (45, bar_y + 20, 200, 12), border_radius=4)
+                pygame.draw.rect(surface, (0, 255, 204), (45, bar_y + 20, int(200 * prog_pct), 12), border_radius=4)
+                
+                prog_lbl = dyn_font.render(f"UPGRADE PROGRESS: {prog_val}/10", True, (200, 200, 210))
+                surface.blit(prog_lbl, (45, bar_y))
+                
+                stats_y = 355
+                pygame.draw.line(surface, (60, 50, 80), (35, stats_y - 10), (255, stats_y - 10), 1)
+                
+                stat_rows = [
+                    ("PERFECTS:", p.perfects, (0, 255, 204)),
+                    ("GREATS:", p.greats, (255, 215, 0)),
+                    ("GOODS:", p.goods, (200, 200, 50)),
+                    ("MISSES:", p.misses, (255, 50, 50)),
+                ]
+                for idx, (s_lbl, s_val, s_col) in enumerate(stat_rows):
+                    row_y = stats_y + idx * 24
+                    lbl_s = dyn_font.render(s_lbl, True, (240, 240, 245))
+                    val_s = val_font.render(str(s_val), True, s_col)
+                    surface.blit(lbl_s, (45, row_y))
+                    surface.blit(val_s, (240 - val_s.get_width(), row_y - 2))
+                    
+                miss_y = stats_y + 105
+                pygame.draw.line(surface, (60, 50, 80), (35, miss_y - 6), (255, miss_y - 6), 1)
+                
+                consec_lbl = dyn_font.render("DANGER (MISSES):", True, (255, 50, 50) if p.consecutive_misses > 0 else (200, 200, 210))
+                consec_surf = val_font.render(f"{p.consecutive_misses} / 2", True, (255, 50, 50) if p.consecutive_misses > 0 else (240, 240, 240))
+                surface.blit(consec_lbl, (45, miss_y))
+                surface.blit(consec_surf, (240 - consec_surf.get_width(), miss_y))
             
 
             # Cheering character
@@ -827,6 +1252,10 @@ class Gameplay:
         # Draw hit particles
         for part in self.particles:
             part.draw(surface)
+            
+        # Draw FNF battle bar in Versus mode
+        if self.game_mode == "Versus" and len(self.players) == 2:
+            self.draw_versus_bar(surface)
             
         # Countdown overlay
         if not self.song_started:
@@ -840,6 +1269,17 @@ class Gameplay:
         if self.paused:
             self.draw_pause_screen(surface, theme)
 
+        # Draw Assist Tick Toggle Notification
+        if hasattr(self, "assist_tick_notif_timer") and self.assist_tick_notif_timer > 0:
+            notif_text = "ASSIST TICK: ENABLED" if settings.assist_tick else "ASSIST TICK: DISABLED"
+            font_notif = pygame.font.SysFont("Segoe UI", 24, bold=True)
+            txt_surf = font_notif.render(notif_text, True, (255, 215, 0) if settings.assist_tick else (200, 200, 205))
+            overlay = pygame.Surface((txt_surf.get_width() + 40, 50), pygame.SRCALPHA)
+            pygame.draw.rect(overlay, (20, 15, 30, 220), (0, 0, overlay.get_width(), 50), border_radius=8)
+            pygame.draw.rect(overlay, (255, 215, 0) if settings.assist_tick else (100, 100, 110), (0, 0, overlay.get_width(), 50), width=2, border_radius=8)
+            overlay.blit(txt_surf, (20, 10))
+            surface.blit(overlay, (w // 2 - overlay.get_width() // 2, 90))
+
     def draw_player_character(self, surface, p, theme, beat_progress):
         w, h = surface.get_size()
         beat_phase = beat_progress % 1.0
@@ -848,7 +1288,10 @@ class Gameplay:
         scale = bounce_scale * hit_scale
         
         # Position VTuber dynamically directly below/above the player's highway
-        c_x = int((w / (self.players_count + 1)) * (p.player_idx + 1))
+        if self.players_count == 2:
+            c_x = 270 if p.player_idx == 0 else 730
+        else:
+            c_x = int((w / (self.players_count + 1)) * (p.player_idx + 1))
         px = c_x
         py = 150 if self.is_downscroll else h - 130
         

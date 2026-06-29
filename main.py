@@ -17,13 +17,15 @@ from tkinter import filedialog
 # Import game modules
 import zipfile
 from sm_parser import SMParser
-from config import settings, SCREEN_WIDTH, SCREEN_HEIGHT, FPS
+from config import settings, SCREEN_WIDTH, SCREEN_HEIGHT, FPS, TIMING_PERFECT, TIMING_GREAT, TIMING_GOOD
 from input_manager import input_manager
 from theme_manager import theme_manager
 from sound_helper import sound_helper
 from song_analyzer import SongAnalyzer
 from gameplay import Gameplay
 from editor import ChartEditor
+from profile_manager import profile_manager, ACHIEVEMENTS, AVATARS
+from celebration import CelebrationSystem
 
 def render_truncated_text(font, text, max_width, color):
     if font.size(text)[0] <= max_width:
@@ -106,12 +108,66 @@ class App:
         self.running = True
         
         # State Management
-        # "TITLE", "SONG_SELECT", "ANALYZING", "GAMEPLAY", "RESULTS", "SETTINGS", "REMAP", "EDITOR"
-        self.state = "TITLE"
+        # "TITLE", "SONG_SELECT", "ANALYZING", "GAMEPLAY", "RESULTS", "SETTINGS", "REMAP", "EDITOR", "PROFILE_CREATION", "PROFILE_STATS"
+        self.state = "PROFILE_CREATION" if not profile_manager.exists() else "TITLE"
+        self.celebration = CelebrationSystem(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.profile_creation_name = ""
+        self.profile_creation_avatar_idx = 0
+        
+        self.taglines = [
+            "When the beat hits... the zoomies begin.",
+            "No thoughts. Just rhythm.",
+            "Hit the beat. Chase the laser.",
+            "The rhythm got the cat.",
+            "Warning: May cause uncontrollable dancing.",
+            "Powered by caffeine and chaos.",
+            "Four arrows. Infinite zoomies.",
+            "Catch the beat before it escapes!",
+            "Perfect timing. Questionable self-control.",
+            "Stay on beat. Avoid the furniture.",
+            "Where every combo has orange cat energy.",
+            "Dance first. Think later.",
+            "Keep calm and hit the arrows.",
+            "Miss a beat? Pretend it was jazz.",
+            "From nap... to max speed in 0.2 seconds.",
+            "The floor is your keyboard.",
+            "Warning: Side effects include head bobbing.",
+            "Easy to learn. Hard to master.",
+            "One more song.",
+            "Feel the beat.",
+            "Find your rhythm.",
+            "Perfect isn't required. Style is.",
+            "Arcade rhythm, modern zoomies."
+        ]
+        self.loading_tips = [
+            "🐾 Hydration improves rhythm. Probably.",
+            "🐾 Cats have excellent timing. Be more like a cat.",
+            "🐾 The arrows are coming. They don't know mercy.",
+            "🐾 Missing one note doesn't count if nobody saw it.",
+            "🐾 Professional cat supervision not included."
+        ]
+        import random
+        self.active_tagline = random.choice(self.taglines)
+        self.active_tip = random.choice(self.loading_tips)
+        self.last_tagline_state = "TITLE"
+        self.last_tip_state = "ANALYZING"
+        self.practice_start_measure = 0
+        self.practice_end_measure = 8
         
         # Menu Indices
         self.title_index = 0
-        self.title_options = ["PLAY", "SETTINGS", "EXIT"]
+        self.title_options = ["PLAY", "PROFILE & STATS", "SETTINGS", "EXIT"]
+        self.newly_unlocked_achievements = []
+        self.achievement_banner_timer = 0.0
+        self.mode_index = 0
+        self.mode_options = ["SOLO", "CO-OP", "VERSUS", "FNF", "PRACTICE"]
+        self.fnf_match_types = ["AI vs Human", "Human vs Human", "Human vs AI", "AI vs AI"]
+        self.fnf_match_type_index = 0
+        
+        # Lobby Inline Typing / Editing
+        self.lobby_edit_mode = None
+        self.lobby_edit_buffer = ""
+        pygame.key.set_repeat(350, 30)
         
         self.settings_index = 0
         self.settings_scroll_y = 0
@@ -143,6 +199,9 @@ class App:
 
         self.song_index = 0
         self.songs_list = []
+        self.display_list = []
+        self.expanded_groups = set()
+        self.cover_cache = {}
         self.difficulty_index = 1  # Default to Medium
         self.difficulties = ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic", "Custom"]
         
@@ -206,25 +265,132 @@ class App:
             })
 
     def scan_songs(self):
-        """Scans the songs directory for JSON beatmaps and populates the list."""
+        """Scans the songs directory recursively for JSON beatmaps, groups, and cover arts."""
         self.songs_list = []
         if not os.path.exists(settings.SONGS_DIR):
             os.makedirs(settings.SONGS_DIR)
             
-        for f in os.listdir(settings.SONGS_DIR):
-            if f.endswith(".json"):
-                json_path = os.path.join(settings.SONGS_DIR, f)
-                try:
-                    with open(json_path, "r") as file:
-                        data = json.load(file)
-                        # Verify it has charts
-                        if "charts" in data and "title" in data:
-                            self.songs_list.append(data)
-                except Exception as e:
-                    print(f"Error reading song map {f}: {e}")
-                    
+        # Clear cover cache
+        self.cover_cache = {}
+        
+        # Traverse songs directory recursively
+        for root, dirs, files in os.walk(settings.SONGS_DIR):
+            for file_name in files:
+                if file_name.endswith(".json"):
+                    json_path = os.path.join(root, file_name)
+                    try:
+                        with open(json_path, "r", encoding="utf-8") as file:
+                            data = json.load(file)
+                            # Verify it has charts
+                            if "charts" in data and "title" in data:
+                                # Determine group name from folder path
+                                rel_path = os.path.relpath(root, settings.SONGS_DIR)
+                                if rel_path == "." or rel_path == "":
+                                    group_name = "Default Album"
+                                else:
+                                    parts = rel_path.split(os.sep)
+                                    group_name = parts[0]
+                                
+                                data["group"] = group_name
+                                data["json_path"] = json_path
+                                
+                                # Search for cover art image in the same directory (root)
+                                json_basename = os.path.splitext(file_name)[0]
+                                cover_image_path = None
+                                valid_exts = [".png", ".jpg", ".jpeg"]
+                                
+                                # 1. Check same base name as json
+                                for ext in valid_exts:
+                                    test_path = os.path.join(root, json_basename + ext)
+                                    if os.path.exists(test_path):
+                                        cover_image_path = test_path
+                                        break
+                                
+                                # 2. Check general names like cover, jacket, banner, album
+                                if not cover_image_path:
+                                    for name in ["cover", "jacket", "banner", "album", "folder"]:
+                                        for ext in valid_exts:
+                                            for case_name in [name, name.upper(), name.capitalize()]:
+                                                test_path = os.path.join(root, case_name + ext)
+                                                if os.path.exists(test_path):
+                                                    cover_image_path = test_path
+                                                    break
+                                            if cover_image_path:
+                                                break
+                                        if cover_image_path:
+                                            break
+                                            
+                                # 3. Fallback: check one directory level up if we are inside GroupName/SongName/
+                                if not cover_image_path and len(rel_path.split(os.sep)) > 1:
+                                    parent_dir = os.path.dirname(root)
+                                    for name in ["cover", "jacket", "banner", "album", "folder"]:
+                                        for ext in valid_exts:
+                                            for case_name in [name, name.upper(), name.capitalize()]:
+                                                test_path = os.path.join(parent_dir, case_name + ext)
+                                                if os.path.exists(test_path):
+                                                    cover_image_path = test_path
+                                                    break
+                                            if cover_image_path:
+                                                break
+                                        if cover_image_path:
+                                            break
+                                            
+                                data["cover_path"] = cover_image_path
+                                self.songs_list.append(data)
+                    except Exception as e:
+                        print(f"Error reading song map {file_name}: {e}")
+                        
         # Sort alphabetically by title
         self.songs_list = sorted(self.songs_list, key=lambda x: x["title"])
+        
+        # Build display list
+        self.build_display_list()
+        
+        # Auto-expand the first group if expanded_groups is empty
+        if self.songs_list and not self.expanded_groups:
+            grouped_keys = sorted(list(set(s.get("group", "Default Album") for s in self.songs_list)))
+            if grouped_keys:
+                self.expanded_groups.add(grouped_keys[0])
+                self.build_display_list()
+
+    def build_display_list(self):
+        """Builds a flat list of display items (groups & songs) for selection screen."""
+        self.display_list = []
+        
+        # Group songs by their group name
+        grouped = {}
+        for song in self.songs_list:
+            grp = song.get("group", "Default Album")
+            if grp not in grouped:
+                grouped[grp] = []
+            grouped[grp].append(song)
+            
+        # Sort group names alphabetically
+        sorted_groups = sorted(grouped.keys())
+        
+        for grp in sorted_groups:
+            group_songs = grouped[grp]
+            # Group item
+            self.display_list.append({
+                "type": "group",
+                "name": grp,
+                "count": len(group_songs),
+                "songs": group_songs
+            })
+            
+            # If group is expanded, append its songs
+            if grp in self.expanded_groups:
+                for song in group_songs:
+                    self.display_list.append({
+                        "type": "song",
+                        "song": song,
+                        "group": grp
+                    })
+                    
+        # Append Upload Custom Song option at the end
+        self.display_list.append({
+            "type": "upload"
+        })
 
     def scan_characters(self):
         """Scans characters directory for folders containing a cheer image."""
@@ -351,6 +517,62 @@ class App:
                 self.running = False
                 return
 
+            if self.state == "DIFFICULTY_SELECT_OVERLAY":
+                if event.type == pygame.KEYDOWN:
+                    key = event.key
+                    
+                    p1_up = settings.keys_p1.get("up", [])
+                    p1_down = settings.keys_p1.get("down", [])
+                    p1_confirm = [pygame.K_RETURN, pygame.K_SPACE]
+                    if not isinstance(p1_up, list): p1_up = [p1_up]
+                    if not isinstance(p1_down, list): p1_down = [p1_down]
+                    
+                    p2_up = settings.keys_p2.get("up", [])
+                    p2_down = settings.keys_p2.get("down", [])
+                    p2_confirm = [pygame.K_KP_ENTER, pygame.K_TAB, pygame.K_f]
+                    if not isinstance(p2_up, list): p2_up = [p2_up]
+                    if not isinstance(p2_down, list): p2_down = [p2_down]
+                    
+                    if key == pygame.K_ESCAPE:
+                        sound_helper.play_back()
+                        self.state = "SONG_SELECT"
+                        continue
+                        
+                    if not self.p1_ready:
+                        if key in p1_up:
+                            self.p1_diff_index = (self.p1_diff_index - 1) % len(self.difficulties)
+                            sound_helper.play_select()
+                        elif key in p1_down:
+                            self.p1_diff_index = (self.p1_diff_index + 1) % len(self.difficulties)
+                            sound_helper.play_select()
+                        elif key in p1_confirm:
+                            sound_helper.play_select()
+                            self.p1_ready = True
+                    else:
+                        if key == pygame.K_BACKSPACE:
+                            sound_helper.play_back()
+                            self.p1_ready = False
+                            
+                    if settings.players == 2:
+                        if not self.p2_ready:
+                            if key in p2_up:
+                                self.p2_diff_index = (self.p2_diff_index - 1) % len(self.difficulties)
+                                sound_helper.play_select()
+                            elif key in p2_down:
+                                self.p2_diff_index = (self.p2_diff_index + 1) % len(self.difficulties)
+                                sound_helper.play_select()
+                            elif key in p2_confirm:
+                                sound_helper.play_select()
+                                self.p2_ready = True
+                        else:
+                            if key == pygame.K_LSHIFT or key in p2_confirm:
+                                sound_helper.play_back()
+                                self.p2_ready = False
+                                
+                    if self.p1_ready and self.p2_ready:
+                        self.start_gameplay_from_overlay()
+                    continue
+
             if self.state == "ERROR_SCREEN":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     self.state = "TITLE"
@@ -361,6 +583,33 @@ class App:
                         pygame.mixer.music.play(-1)
                     except:
                         pass
+                continue
+
+            if self.state == "CALIBRATION":
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        sound_helper.play_back()
+                        self.state = "SETTINGS"
+                        continue
+                    elif event.key == pygame.K_RETURN:
+                        if self.calib_taps:
+                            avg_offset = sum(self.calib_taps) / len(self.calib_taps)
+                            settings.audio_offset = avg_offset
+                            print(f"Saved audio offset: {avg_offset:.4f}s")
+                        sound_helper.play_select()
+                        self.state = "SETTINGS"
+                        continue
+                    elif event.key in [pygame.K_SPACE, pygame.K_d, pygame.K_f, pygame.K_j, pygame.K_k]:
+                        self.register_calibration_tap()
+                        continue
+                elif event.type == pygame.JOYBUTTONDOWN:
+                    if event.button == 1: # B button
+                        sound_helper.play_back()
+                        self.state = "SETTINGS"
+                        continue
+                    elif event.button == 0: # A button
+                        self.register_calibration_tap()
+                        continue
                 continue
 
             # --- MENU NAVIGATION KEYS ---
@@ -400,12 +649,30 @@ class App:
                         sound_helper.play_select()
                     else:
                         dir_scroll = -1 if event.button == 4 else 1
-                        self.song_index = (self.song_index + dir_scroll) % (len(self.songs_list) + 1)
+                        self.song_index = (self.song_index + dir_scroll) % len(self.display_list)
                         self.update_difficulties_list()
                         sound_helper.play_select()
                     continue
+                elif self.state == "PROFILE_STATS" and event.button in [4, 5]:
+                    dir_scroll = -1 if event.button == 4 else 1
+                    self.profile_scroll_idx = max(0, self.profile_scroll_idx + dir_scroll)
+                    sound_helper.play_select()
+                    continue
                 elif self.state == "EDITOR" and event.button in [4, 5]:
                     self.editor.handle_scroll(event.button)
+                    continue
+                elif self.state == "SETTINGS" and event.button in [4, 5]:
+                    dir_scroll = -1 if event.button == 4 else 1
+                    opts = self.get_settings_options()
+                    self.settings_index = (self.settings_index + dir_scroll) % len(opts)
+                    while opts[self.settings_index].startswith("---"):
+                        self.settings_index = (self.settings_index + dir_scroll) % len(opts)
+                    # Scroll active index into view (maximum 12 visible items)
+                    if self.settings_index < self.settings_scroll_y:
+                        self.settings_scroll_y = self.settings_index
+                    elif self.settings_index >= self.settings_scroll_y + 12:
+                        self.settings_scroll_y = self.settings_index - 11
+                    sound_helper.play_select()
                     continue
 
             # --- GAMEPLAY KEYS & GAMEPADS ROUTING ---
@@ -416,6 +683,12 @@ class App:
                     
                     if is_down and key == pygame.K_ESCAPE:
                         self.trigger_back()
+                        continue
+                        
+                    if is_down and key == pygame.K_F7:
+                        settings.assist_tick = not settings.assist_tick
+                        sound_helper.play_select()
+                        self.gameplay.assist_tick_notif_timer = 2.0
                         continue
                     
                     # Distribute inputs to keyboard-controlled players
@@ -547,15 +820,92 @@ class App:
                                 self.difficulty_index = self.difficulties.index(final_diff)
                             self.state = "SONG_SELECT"
                     else:
-                        self.editor.handle_key_down(event.key)
+                        self.editor.handle_key_down(event)
                 elif event.type == pygame.KEYUP:
                     self.editor.handle_key_up(event.key)
                 continue
 
-            # Feed to input manager (abstracts keyboard and controller events)
-            input_result = input_manager.handle_event(event)
-            
-            # --- REMAP STATE EVENT HANDLING ---
+            # --- PROFILE CREATION STATE EVENT HANDLING ---
+            if self.state == "PROFILE_CREATION":
+                if event.type == pygame.KEYDOWN:
+                    if event.key in [pygame.K_RETURN, pygame.K_KP_ENTER]:
+                        name = self.profile_creation_name.strip()
+                        if name:
+                            avatar_id = AVATARS[self.profile_creation_avatar_idx]["id"]
+                            profile_manager.create_profile(name, avatar_id)
+                            profile_manager.load()
+                            sound_helper.play_select()
+                            self.state = "TITLE"
+                            self.title_index = 0
+                    elif event.key == pygame.K_BACKSPACE:
+                        self.profile_creation_name = self.profile_creation_name[:-1]
+                        sound_helper.play_select()
+                    elif event.key == pygame.K_TAB:
+                        self.profile_creation_avatar_idx = (self.profile_creation_avatar_idx + 1) % len(AVATARS)
+                        sound_helper.play_select()
+                    elif event.unicode:
+                        if len(self.profile_creation_name) < 15 and (event.unicode.isalnum() or event.unicode in " _-"):
+                            self.profile_creation_name += event.unicode
+                            sound_helper.play_select()
+                continue
+
+            # --- PROFILE STATS STATE EVENT HANDLING ---
+            if self.state == "PROFILE_STATS":
+                if event.type == pygame.KEYDOWN:
+                    if event.key in [pygame.K_ESCAPE, pygame.K_BACKSPACE]:
+                        self.trigger_back()
+                    elif event.key in [pygame.K_LEFT, pygame.K_a]:
+                        tabs = ["stats", "scores", "achievements"]
+                        curr_idx = tabs.index(self.profile_tab)
+                        self.profile_tab = tabs[(curr_idx - 1) % len(tabs)]
+                        self.profile_scroll_idx = 0
+                        sound_helper.play_select()
+                    elif event.key in [pygame.K_RIGHT, pygame.K_d]:
+                        tabs = ["stats", "scores", "achievements"]
+                        curr_idx = tabs.index(self.profile_tab)
+                        self.profile_tab = tabs[(curr_idx + 1) % len(tabs)]
+                        self.profile_scroll_idx = 0
+                        sound_helper.play_select()
+                    elif event.key in [pygame.K_UP, pygame.K_w]:
+                        self.profile_scroll_idx = max(0, self.profile_scroll_idx - 1)
+                        sound_helper.play_select()
+                    elif event.key in [pygame.K_DOWN, pygame.K_s]:
+                        self.profile_scroll_idx += 1
+                        sound_helper.play_select()
+                continue
+
+            # --- LOBBY INLINE EDIT STATE EVENT HANDLING (INTERCEPT BEFORE INPUT MANAGER) ---
+            if self.state == "LOBBY" and getattr(self, "lobby_edit_mode", None) is not None:
+                if event.type == pygame.KEYDOWN:
+                    if event.key in [pygame.K_RETURN, pygame.K_KP_ENTER]:
+                        try:
+                            val = int(self.lobby_edit_buffer) if self.lobby_edit_buffer else 0
+                        except ValueError:
+                            val = 0
+                        total_m = self.get_selected_song_total_measures()
+                        if self.lobby_edit_mode == "practice_start_measure":
+                            val = max(0, min(total_m, val))
+                            self.practice_start_measure = val
+                            if self.practice_start_measure >= self.practice_end_measure:
+                                self.practice_end_measure = min(total_m, self.practice_start_measure + 1)
+                        elif self.lobby_edit_mode == "practice_end_measure":
+                            val = max(self.practice_start_measure + 1, min(total_m, val))
+                            self.practice_end_measure = val
+                        self.lobby_edit_mode = None
+                        sound_helper.play_select()
+                    elif event.key == pygame.K_ESCAPE:
+                        self.lobby_edit_mode = None
+                        sound_helper.play_back()
+                    elif event.key == pygame.K_BACKSPACE:
+                        self.lobby_edit_buffer = self.lobby_edit_buffer[:-1]
+                        sound_helper.play_select()
+                    elif event.unicode.isdigit():
+                        if len(self.lobby_edit_buffer) < 5:
+                            self.lobby_edit_buffer += event.unicode
+                            sound_helper.play_select()
+                continue
+
+            # --- REMAP STATE EVENT HANDLING (INTERCEPT BEFORE INPUT MANAGER) ---
             if self.state == "REMAP":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     if getattr(self, "active_remap_cell", None) is not None:
@@ -565,7 +915,7 @@ class App:
                     else:
                         input_manager.cancel_remap()
                         sound_helper.play_back()
-                        self.state = "SETTINGS"
+                        self.state = getattr(self, "remap_return_state", "SETTINGS")
                     continue
                 
                 # Clear keybind if DELETE or BACKSPACE is pressed during active cell remap
@@ -591,21 +941,26 @@ class App:
                     self.active_remap_cell = None
                     sound_helper.play_select()
                     continue
-                
-                continue
+
+            # Feed to input manager (abstracts keyboard and controller events)
+            input_result = input_manager.handle_event(event)
 
             # --- SONG SELECT QUICK EDITOR SHORTCUT ---
             if self.state == "SONG_SELECT" and event.type == pygame.KEYDOWN and event.key == pygame.K_e:
-                if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
-                    self.start_chart_editor()
+                if self.display_list and self.song_index < len(self.display_list):
+                    item = self.display_list[self.song_index]
+                    if item["type"] == "song":
+                        self.start_chart_editor()
                     continue
 
             # --- SONG SELECT QUICK DELETE SHORTCUT ---
             if self.state == "SONG_SELECT" and event.type == pygame.KEYDOWN and event.key == pygame.K_DELETE:
-                if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
-                    selected_song = self.songs_list[self.song_index]
-                    if selected_song["filename"] != "Retro_Beat.wav":
-                        self.delete_song(selected_song)
+                if self.display_list and self.song_index < len(self.display_list):
+                    item = self.display_list[self.song_index]
+                    if item["type"] == "song":
+                        selected_song = item["song"]
+                        if selected_song["filename"] != "Retro_Beat.wav":
+                            self.delete_song(selected_song)
                     continue
 
             # Toggle Fullscreen with F11
@@ -661,15 +1016,37 @@ class App:
                 self.title_index = (self.title_index + 1) % len(self.title_options)
                 sound_helper.play_select()
                 
+        elif self.state == "MODE_SELECT":
+            if direction == "left":
+                self.mode_index = (self.mode_index - 1) % len(self.mode_options)
+                sound_helper.play_select()
+            elif direction == "right":
+                self.mode_index = (self.mode_index + 1) % len(self.mode_options)
+                sound_helper.play_select()
+                
+        elif self.state == "LOBBY":
+            items = self.get_lobby_items()
+            if items:
+                if direction == "up":
+                    self.lobby_selection_index = (self.lobby_selection_index - 1) % len(items)
+                    sound_helper.play_select()
+                elif direction == "down":
+                    self.lobby_selection_index = (self.lobby_selection_index + 1) % len(items)
+                    sound_helper.play_select()
+                elif direction == "left":
+                    self.adjust_lobby_setting(-1)
+                elif direction == "right":
+                    self.adjust_lobby_setting(1)
+                
         elif self.state == "SONG_SELECT":
-            if not self.songs_list:
+            if not self.display_list:
                 return
             if direction == "up":
-                self.song_index = (self.song_index - 1) % len(self.songs_list)
+                self.song_index = (self.song_index - 1) % len(self.display_list)
                 self.update_difficulties_list()
                 sound_helper.play_select()
             elif direction == "down":
-                self.song_index = (self.song_index + 1) % len(self.songs_list)
+                self.song_index = (self.song_index + 1) % len(self.display_list)
                 self.update_difficulties_list()
                 sound_helper.play_select()
             elif direction == "left":
@@ -707,19 +1084,100 @@ class App:
             opt = self.title_options[self.title_index]
             if opt == "PLAY":
                 sound_helper.play_select()
-                self.state = "SONG_SELECT"
+                self.state = "MODE_SELECT"
+                self.mode_index = 0
+            elif opt == "PROFILE & STATS":
+                sound_helper.play_select()
+                self.state = "PROFILE_STATS"
+                self.profile_tab = "stats"
+                self.profile_scroll_idx = 0
             elif opt == "SETTINGS":
                 sound_helper.play_select()
                 self.state = "SETTINGS"
             elif opt == "EXIT":
                 self.running = False
                 
+        elif self.state == "MODE_SELECT":
+            sound_helper.play_select()
+            mode = self.mode_options[self.mode_index]
+            if mode == "PRACTICE":
+                settings.game_mode = "Practice"
+                settings.players = 1
+                self.state = "SONG_SELECT"
+                self.build_display_list()
+                self.song_index = min(self.song_index, len(self.display_list) - 1) if self.display_list else 0
+                self.update_difficulties_list()
+            else:
+                self.lobby_selection_index = 0
+                self.state = "LOBBY"
+            
+        elif self.state == "LOBBY":
+            items = self.get_lobby_items()
+            if self.lobby_selection_index < len(items):
+                item = items[self.lobby_selection_index]
+                if item["type"] == "link":
+                    sound_helper.play_select()
+                    self.start_key_remapping(item["action_mode"])
+                elif item["type"] == "value" and item["key"] in ["practice_start_measure", "practice_end_measure"]:
+                    # Toggle inline editing on confirm click / enter
+                    sound_helper.play_select()
+                    self.lobby_edit_mode = item["key"]
+                    self.lobby_edit_buffer = str(getattr(self, item["key"]))
+                elif item["type"] == "action" and item["action"] == "start":
+                    # Save setup settings
+                    mode = self.mode_options[self.mode_index]
+                    sound_helper.play_select()
+                    
+                    if mode == "PRACTICE":
+                        self.start_gameplay_from_overlay()
+                    else:
+                        if mode == "SOLO":
+                            settings.game_mode = "Solo"
+                            settings.players = 1
+                        elif mode == "CO-OP":
+                            settings.game_mode = "Co-Op"
+                            settings.players = 2
+                        elif mode == "VERSUS":
+                            settings.game_mode = "Versus"
+                            settings.players = 2
+                        elif mode == "FNF":
+                            settings.game_mode = "FNF"
+                            settings.players = 2
+                            
+                        # Also configure devices
+                        active_match = self.fnf_match_types[self.fnf_match_type_index] if mode == "FNF" else ""
+                        p1_is_human = True if mode != "FNF" else ("Human" in active_match.split(" vs ")[0])
+                        p2_is_human = True if mode != "FNF" else ("Human" in active_match.split(" vs ")[1])
+                        
+                        if not p1_is_human:
+                            settings.device_p1 = "Keyboard"
+                        if not p2_is_human:
+                            settings.device_p2 = "Keyboard"
+                            
+                        # Proceed to Song Select
+                        self.state = "SONG_SELECT"
+                        self.build_display_list()
+                        self.song_index = min(self.song_index, len(self.display_list) - 1) if self.display_list else 0
+                        self.update_difficulties_list()
+                    
         elif self.state == "SONG_SELECT":
-            # 1. Standard Play Select or Upload
-            # If songs are available, enter gameplay
-            # Add a virtual song index at the end for "UPLOAD SONG"
-            if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
-                selected_song = self.songs_list[self.song_index]
+            if not self.display_list or self.song_index >= len(self.display_list):
+                return
+                
+            item = self.display_list[self.song_index]
+            if item["type"] == "group":
+                grp_name = item["name"]
+                if grp_name in self.expanded_groups:
+                    self.expanded_groups.remove(grp_name)
+                else:
+                    self.expanded_groups.add(grp_name)
+                self.build_display_list()
+                sound_helper.play_select()
+                # Ensure song_index is clamped safely in new list
+                self.song_index = min(self.song_index, len(self.display_list) - 1)
+                self.update_difficulties_list()
+            elif item["type"] == "song":
+                selected_song = item["song"]
                 selected_diff = self.difficulties[self.difficulty_index]
                 chk_diff = "Medium" if selected_diff == "Dynamic" else selected_diff
                 
@@ -731,8 +1189,22 @@ class App:
                     return
                     
                 sound_helper.play_select()
-                self.gameplay = Gameplay(selected_song, selected_diff, settings.character)
-                self.state = "GAMEPLAY"
+                self.p1_diff_index = self.difficulty_index
+                self.p2_diff_index = self.difficulty_index
+                
+                if settings.game_mode == "Practice":
+                    self.lobby_selection_index = 0
+                    self.state = "LOBBY"
+                    total_m = self.get_selected_song_total_measures()
+                    self.practice_start_measure = 0
+                    self.practice_end_measure = total_m
+                else:
+                    if settings.players == 1:
+                        self.start_gameplay_from_overlay()
+                    else:
+                        self.p1_ready = False
+                        self.p2_ready = False if settings.players == 2 else True
+                        self.state = "DIFFICULTY_SELECT_OVERLAY"
             else:
                 self.trigger_song_upload()
                 
@@ -742,6 +1214,9 @@ class App:
             if opt == "BACK":
                 sound_helper.play_back()
                 self.state = "TITLE"
+            elif opt == "CALIBRATE LATENCY":
+                sound_helper.play_select()
+                self.start_calibration()
             elif "REMAP" in opt:
                 p_num = int(opt[7])
                 sound_helper.play_select()
@@ -763,7 +1238,22 @@ class App:
                 self.gameplay.toggle_pause()
 
     def trigger_back(self):
-        if self.state == "SONG_SELECT":
+        if self.state == "MODE_SELECT":
+            sound_helper.play_back()
+            self.state = "TITLE"
+        elif self.state == "LOBBY":
+            sound_helper.play_back()
+            if settings.game_mode == "Practice":
+                self.state = "SONG_SELECT"
+            else:
+                self.state = "MODE_SELECT"
+        elif self.state == "SONG_SELECT":
+            sound_helper.play_back()
+            if settings.game_mode == "Practice":
+                self.state = "MODE_SELECT"
+            else:
+                self.state = "LOBBY"
+        elif self.state == "PROFILE_STATS":
             sound_helper.play_back()
             self.state = "TITLE"
         elif self.state == "SETTINGS":
@@ -783,6 +1273,28 @@ class App:
             else:
                 # Pause gameplay
                 self.gameplay.toggle_pause()
+
+    def start_calibration(self):
+        self.state = "CALIBRATION"
+        self.calib_bpm = 100
+        self.calib_beat_interval = 60.0 / self.calib_bpm # 0.6 seconds
+        self.calib_start_time = time.time()
+        self.calib_taps = []
+        self.calib_flash = 0.0
+        self.calib_last_beat_index = -1
+        self.calib_msg = "Listen to the metronome and TAP exactly on the beat!"
+
+    def register_calibration_tap(self):
+        t_elapsed = time.time() - self.calib_start_time
+        beat_idx = round(t_elapsed / self.calib_beat_interval)
+        expected_t = beat_idx * self.calib_beat_interval
+        diff = t_elapsed - expected_t
+        if abs(diff) < self.calib_beat_interval * 0.5:
+            self.calib_taps.append(diff)
+            if len(self.calib_taps) > 12:
+                self.calib_taps.pop(0) # Keep last 12 taps
+            sound_helper.play_hit()
+            self.calib_flash = 0.8 # Visual flash feedback
 
     def is_dark_theme(self, theme):
         return theme in ["DDR-Retro", "Retro-Pixel", "Futuristic", "Neko-Pixel"]
@@ -831,29 +1343,32 @@ class App:
         return name
 
     def update_difficulties_list(self):
-        if not self.songs_list or self.song_index >= len(self.songs_list):
+        if not self.display_list or self.song_index >= len(self.display_list):
             self.difficulties = ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic", "Custom"]
             self.difficulty_index = self.difficulty_index % len(self.difficulties)
             return
-        
-        selected_song = self.songs_list[self.song_index]
+            
+        item = self.display_list[self.song_index]
+        if item["type"] != "song":
+            self.difficulties = ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic", "Custom"]
+            self.difficulty_index = self.difficulty_index % len(self.difficulties)
+            return
+            
+        selected_song = item["song"]
         base_diffs = ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic"]
         charts = selected_song.get("charts", {})
-        custom_diffs = [k for k in charts.keys() if k.startswith("Custom")]
+        custom_diffs = [k for k in charts.keys() if k not in base_diffs]
         
         def sort_custom_key(val):
             parts = val.split()
             if len(parts) < 2:
-                return 1
+                return 999
             try:
                 return int(parts[1])
             except ValueError:
-                return 9999
+                return 999
         custom_diffs.sort(key=sort_custom_key)
         
-        if not custom_diffs:
-            custom_diffs = ["Custom"]
-            
         self.difficulties = base_diffs + custom_diffs
         self.difficulty_index = self.difficulty_index % len(self.difficulties)
 
@@ -883,13 +1398,19 @@ class App:
                 opts.append(f"REMAP P{p} GAMEPAD")
                 
         # UI Settings
-        opts.append("--- UI SETTINGS ---")
+        opts.append("--- UI & TIMING ---")
         opts.append("THEME")
+        opts.append("AUDIO OFFSET")
+        opts.append("CALIBRATE LATENCY")
+        opts.append("PROPORTIONAL SCORING")
+        opts.append("MISS PENALTY")
+        opts.append("PLAYBACK SPEED")
         
         # Sound/Graphics Settings
         opts.append("--- SOUND & GRAPHICS ---")
         opts.append("MUSIC VOLUME")
         opts.append("SFX VOLUME")
+        opts.append("ASSIST TICK")
         opts.append("SHOW CONSOLE")
         
         opts.append("BACK")
@@ -958,10 +1479,45 @@ class App:
             settings.show_console = not settings.show_console
             self.apply_console_visibility()
             sound_helper.play_select()
+        elif opt == "ASSIST TICK":
+            settings.assist_tick = not settings.assist_tick
+            sound_helper.play_select()
         elif opt == "THEME":
-            themes = ["DDR-Retro", "Minimalist", "Retro-Pixel", "Futuristic", "Kawaii-Pink", "Neko-Pixel"]
+            from theme_manager import theme_manager
+            all_themes = ["DDR-Retro", "Minimalist", "Retro-Pixel", "Futuristic", "Kawaii-Pink", "Neko-Pixel"]
+            custom_theme_names = list(theme_manager.custom_themes.keys())
+            all_themes += custom_theme_names
+            
+            unlocked = ["DDR-Retro"]
+            if profile_manager.exists():
+                unlocked = profile_manager.profile.get("unlocked_themes", ["DDR-Retro"])
+            themes = [t for t in all_themes if t in unlocked or t == "DDR-Retro" or t in custom_theme_names]
             curr_idx = themes.index(settings.theme) if settings.theme in themes else 0
             settings.theme = themes[(curr_idx + dir_val) % len(themes)]
+            sound_helper.play_select()
+        elif opt == "AUDIO OFFSET":
+            settings.audio_offset = max(-0.5, min(0.5, settings.audio_offset + dir_val * 0.005))
+            sound_helper.play_select()
+        elif opt == "PROPORTIONAL SCORING":
+            settings.proportional_scoring = not getattr(settings, "proportional_scoring", False)
+            sound_helper.play_select()
+        elif opt == "MISS PENALTY":
+            penalties = [0, 50, 100, 200, 500]
+            curr_pen = getattr(settings, "miss_penalty", 0)
+            if curr_pen not in penalties:
+                curr_idx = 0
+            else:
+                curr_idx = penalties.index(curr_pen)
+            settings.miss_penalty = penalties[(curr_idx + dir_val) % len(penalties)]
+            sound_helper.play_select()
+        elif opt == "PLAYBACK SPEED":
+            speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0]
+            curr_spd = getattr(settings, "playback_speed", 1.0)
+            if curr_spd not in speeds:
+                curr_idx = 2
+            else:
+                curr_idx = speeds.index(curr_spd)
+            settings.playback_speed = speeds[(curr_idx + dir_val) % len(speeds)]
             sound_helper.play_select()
         elif opt == "PLAYERS":
             settings.players = ((settings.players - 1 + dir_val) % 4) + 1
@@ -1016,38 +1572,79 @@ class App:
                 
             sound_helper.play_back()
             self.scan_songs()
+            self.build_display_list()
             
-            if self.song_index >= len(self.songs_list):
-                self.song_index = max(0, len(self.songs_list) - 1)
+            if self.display_list:
+                self.song_index = min(self.song_index, len(self.display_list) - 1)
+            else:
+                self.song_index = 0
+            self.update_difficulties_list()
                 
             print(f"Successfully deleted song: {song['title']}")
         except Exception as e:
             print(f"Error deleting song: {e}")
 
+    def load_profiles_db(self):
+        profile_path = os.path.join(settings.BASE_DIR, "profiles.json")
+        default_db = {
+            "play_count": 0,
+            "hours_played": 0.0,
+            "total_steps": 0,
+            "overall_accuracy": 0.0,
+            "unlocked_achievements": []
+        }
+        if os.path.exists(profile_path):
+            try:
+                with open(profile_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading profiles: {e}")
+        return default_db
+
+    def save_profiles_db(self, db):
+        profile_path = os.path.join(settings.BASE_DIR, "profiles.json")
+        try:
+            with open(profile_path, "w", encoding="utf-8") as f:
+                json.dump(db, f, indent=4)
+        except Exception as e:
+            print(f"Error saving profiles: {e}")
+
     def update_high_score(self, song_metadata, difficulty, results):
         """Updates high scores locally in the song's JSON file."""
         total_notes = results["perfects"] + results["greats"] + results["goods"] + results["misses"]
-        if total_notes == 0:
-            grade = "F"
-        else:
-            perf_ratio = results["perfects"] / total_notes
-            great_ratio = results["greats"] / total_notes
-            miss_ratio = results["misses"] / total_notes
-            
-            if miss_ratio == 0 and perf_ratio > 0.95:
-                grade = "AAA"
-            elif perf_ratio + great_ratio > 0.85 and miss_ratio < 0.05:
-                grade = "AA"
-            elif perf_ratio + great_ratio > 0.70 and miss_ratio < 0.15:
-                grade = "A"
-            elif miss_ratio < 0.30:
-                grade = "B"
-            elif miss_ratio < 0.45:
-                grade = "C"
+        
+        # Calculate grade & badges
+        badges = []
+        if total_notes > 0:
+            if results["perfects"] == total_notes:
+                badges.append("🐾 ALL PERFECT")
+                grade = "SSS"
+            elif results["misses"] == 0:
+                if results["goods"] == 0:
+                    badges.append("🐾 FULL COMBO")
+                    grade = "S"
+                else:
+                    badges.append("🐾 NO MISSES")
+                    grade = "A"
             else:
-                grade = "D"
-                
+                accuracy = (results["perfects"] * 100 + results["greats"] * 75 + results["goods"] * 40) / total_notes
+                if accuracy >= 95.0:
+                    grade = "S"
+                elif accuracy >= 90.0:
+                    grade = "A"
+                elif accuracy >= 80.0:
+                    grade = "B"
+                elif accuracy >= 70.0:
+                    grade = "C"
+                elif accuracy >= 60.0:
+                    grade = "D"
+                else:
+                    grade = "F"
+        else:
+            grade = "F"
+            
         results["grade"] = grade
+        results["badges"] = badges
         
         if "high_scores" not in song_metadata:
             song_metadata["high_scores"] = {}
@@ -1063,7 +1660,8 @@ class App:
                 "perfects": results["perfects"],
                 "greats": results["greats"],
                 "goods": results["goods"],
-                "misses": results["misses"]
+                "misses": results["misses"],
+                "badges": badges
             }
             
             # Save back to JSON
@@ -1076,12 +1674,57 @@ class App:
                 print(f"Error saving high score: {e}")
                 
         results["is_new_record"] = is_new_record
+        
+        # --- PROFILE & ACHIEVEMENTS ENGINE ---
+        db = self.load_profiles_db()
+        db["play_count"] += 1
+        db["total_steps"] += results["perfects"] + results["greats"] + results["goods"]
+        db["hours_played"] += float(results.get("duration", 60.0) / 3600.0)
+        
+        curr_acc = (results["perfects"] * 100.0 + results["greats"] * 75.0 + results["goods"] * 40.0) / max(1, total_notes)
+        db["overall_accuracy"] = float(round((db["overall_accuracy"] * (db["play_count"] - 1) + curr_acc) / db["play_count"], 2))
+        
+        # Check achievements
+        new_unlocked = []
+        
+        # Achievement: Laser Pointer (Hit 100 Perfects in a single run)
+        if results["perfects"] >= 100 and "Laser Pointer" not in db["unlocked_achievements"]:
+            new_unlocked.append("Laser Pointer")
+            
+        # Achievement: 3 AM Energy (Play a song between 12 AM and 4 AM)
+        import datetime
+        curr_hr = datetime.datetime.now().hour
+        if curr_hr >= 0 and curr_hr < 4 and "3 AM Energy" not in db["unlocked_achievements"]:
+            new_unlocked.append("3 AM Energy")
+            
+        # Achievement: Orange Cat (Played 10 songs in total)
+        if db["play_count"] >= 10 and "Orange Cat" not in db["unlocked_achievements"]:
+            new_unlocked.append("Orange Cat")
+            
+        # Achievement: Cat Nap (Paused gameplay for > 5 minutes in a song)
+        if getattr(self, "last_gameplay_pause_duration", 0.0) > 300.0 and "Cat Nap" not in db["unlocked_achievements"]:
+            new_unlocked.append("Cat Nap")
+            
+        # Achievement: Knocked Over the Water Glass (Missed the very last note of the song)
+        if results.get("missed_last_note", False) and "Knocked Over the Water Glass" not in db["unlocked_achievements"]:
+            new_unlocked.append("Knocked Over the Water Glass")
+            
+        if new_unlocked:
+            db["unlocked_achievements"].extend(new_unlocked)
+            results["unlocked_achievements"] = new_unlocked
+            self.save_profiles_db(db)
+            print(f"Unlocked Achievements: {new_unlocked}!")
+        else:
+            self.save_profiles_db(db)
 
     def start_chart_editor(self):
         """Launches the chart editor for the selected song and difficulty."""
-        if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
+        if self.display_list and self.song_index < len(self.display_list):
+            item = self.display_list[self.song_index]
+            if item["type"] != "song":
+                return
             sound_helper.play_select()
-            selected_song = self.songs_list[self.song_index]
+            selected_song = item["song"]
             selected_diff = self.difficulties[self.difficulty_index]
             if selected_diff == "Dynamic":
                 selected_diff = "Medium"
@@ -1094,115 +1737,125 @@ class App:
             self.state = "EDITOR"
 
     def trigger_song_upload(self):
-        """Triggers file explorer upload and background thread analysis."""
+        """Triggers file explorer upload and background thread analysis for multiple files."""
         sound_helper.play_select()
         
         # Run filedialog in native OS picker
-        selected_file = self.open_file_picker_dialog()
-        if not selected_file:
+        selected_files = self.open_file_picker_dialog()
+        if not selected_files:
             print("Song upload canceled.")
             return
-
-        is_zip = selected_file.lower().endswith(".zip")
-        
-        # Prepare copy to songs/ folder for non-zip uploads
-        filename = os.path.basename(selected_file)
-        sanitized_filename = filename.replace(" ", "_")
-        dest_path = os.path.join(settings.SONGS_DIR, sanitized_filename)
-        output_json = dest_path.rsplit(".", 1)[0] + ".json"
-        
-        if not is_zip:
-            try:
-                shutil.copy(selected_file, dest_path)
-            except Exception as e:
-                print(f"Error copying song file: {e}")
-                return
 
         # Start analyzing state
         self.state = "ANALYZING"
         self.analysis_error = None
         self.analysis_success_data = None
-        self.analysis_progress_text = "Loading upload file..."
+        self.analysis_progress_text = "Preparing file import queue..."
         
         # Start background analysis thread
         def thread_task():
-            temp_dir = None
-            try:
-                if is_zip:
-                    self.analysis_progress_text = "Extracting ZIP archive..."
-                    temp_dir = os.path.join(settings.SONGS_DIR, f"temp_unzip_{int(time.time())}")
-                    os.makedirs(temp_dir, exist_ok=True)
-                    
-                    with zipfile.ZipFile(selected_file, 'r') as zip_ref:
-                        zip_ref.extractall(temp_dir)
+            success_count = 0
+            for idx, selected_file in enumerate(selected_files):
+                is_zip = selected_file.lower().endswith(".zip")
+                filename = os.path.basename(selected_file)
+                sanitized_filename = filename.replace(" ", "_")
+                dest_path = os.path.join(settings.SONGS_DIR, sanitized_filename)
+                output_json = dest_path.rsplit(".", 1)[0] + ".json"
+                
+                self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Copying {filename}..."
+                
+                if not is_zip:
+                    try:
+                        shutil.copy(selected_file, dest_path)
+                    except Exception as e:
+                        print(f"Error copying song file: {e}")
+                        continue
+
+                temp_dir = None
+                try:
+                    if is_zip:
+                        self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Extracting ZIP..."
+                        temp_dir = os.path.join(settings.SONGS_DIR, f"temp_unzip_{int(time.time())}_{idx}")
+                        os.makedirs(temp_dir, exist_ok=True)
                         
-                    # Find audio and chart files recursively
-                    chart_file = None
-                    audio_file = None
-                    for root_dir, dirs, files in os.walk(temp_dir):
-                        for f in files:
-                            f_lower = f.lower()
-                            if f_lower.endswith((".sm", ".ssc")):
-                                if not chart_file or f_lower.endswith(".sm"):
-                                    chart_file = os.path.join(root_dir, f)
-                            elif f_lower.endswith((".mp3", ".wav", ".ogg")):
-                                audio_file = os.path.join(root_dir, f)
-                                
-                    if not audio_file:
-                        raise ValueError("No valid audio file (MP3/WAV/OGG) found inside ZIP.")
-                        
-                    audio_filename = os.path.basename(audio_file).replace(" ", "_")
-                    dest_audio_path = os.path.join(settings.SONGS_DIR, audio_filename)
-                    dest_json_path = dest_audio_path.rsplit(".", 1)[0] + ".json"
-                    
-                    # Copy audio file to songs/
-                    shutil.copy(audio_file, dest_audio_path)
-                    
-                    if chart_file:
-                        self.analysis_progress_text = "Parsing Stepmania charts..."
-                        song_data = SMParser.parse(chart_file)
-                        if song_data:
-                            # Fill details
-                            song_data["filename"] = audio_filename
+                        with zipfile.ZipFile(selected_file, 'r') as zip_ref:
+                            zip_ref.extractall(temp_dir)
                             
-                            # Get audio duration
-                            try:
-                                import miniaudio
-                                info = miniaudio.get_file_info(dest_audio_path)
-                                song_data["duration"] = info.duration
-                            except Exception:
-                                song_data["duration"] = 120.0 # Default fallback
-                                
-                            # Save JSON
-                            with open(dest_json_path, "w") as f_out:
-                                json.dump(song_data, f_out, indent=4)
-                                
-                            self.analysis_success_data = song_data
-                            print(f"Successfully imported Stepmania song from ZIP: {song_data['title']}")
+                        # Find audio and chart files recursively
+                        chart_file = None
+                        audio_file = None
+                        for root_dir, dirs, files in os.walk(temp_dir):
+                            for f in files:
+                                f_lower = f.lower()
+                                if f_lower.endswith((".sm", ".ssc")):
+                                    if not chart_file or f_lower.endswith(".sm"):
+                                        chart_file = os.path.join(root_dir, f)
+                                elif f_lower.endswith((".mp3", ".wav", ".ogg")):
+                                    audio_file = os.path.join(root_dir, f)
+                                    
+                        if not audio_file:
+                            raise ValueError("No valid audio file (MP3/WAV/OGG) found inside ZIP.")
+                            
+                        audio_filename = os.path.basename(audio_file).replace(" ", "_")
+                        dest_audio_path = os.path.join(settings.SONGS_DIR, audio_filename)
+                        dest_json_path = dest_audio_path.rsplit(".", 1)[0] + ".json"
+                        
+                        shutil.copy(audio_file, dest_audio_path)
+                        
+                        if chart_file:
+                            self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Parsing Stepmania chart..."
+                            song_data = SMParser.parse(chart_file)
+                            if song_data:
+                                song_data["filename"] = audio_filename
+                                try:
+                                    import miniaudio
+                                    info = miniaudio.get_file_info(dest_audio_path)
+                                    song_data["duration"] = info.duration
+                                except Exception:
+                                    song_data["duration"] = 120.0
+                                    
+                                with open(dest_json_path, "w") as f_out:
+                                    json.dump(song_data, f_out, indent=4)
+                                    
+                                self.analysis_success_data = song_data
+                                success_count += 1
+                                print(f"Successfully imported Stepmania song from ZIP: {song_data['title']}")
+                            else:
+                                print("Stepmania parser returned None. Falling back to auto-analyzer...")
+                                self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Auto-analyzing audio..."
+                                song_data = self.analyzer.analyze_song(dest_audio_path, dest_json_path)
+                                self.analysis_success_data = song_data
+                                success_count += 1
                         else:
-                            # If parsing failed, fallback to auto-analyzer
-                            print("Stepmania parser returned None. Falling back to auto-analyzer...")
-                            self.analysis_progress_text = "Running Transient Peak Detection..."
+                            self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Auto-analyzing audio..."
                             song_data = self.analyzer.analyze_song(dest_audio_path, dest_json_path)
                             self.analysis_success_data = song_data
+                            success_count += 1
                     else:
-                        # No SM chart file found, use auto-analyzer
-                        self.analysis_progress_text = "Running Transient Peak Detection..."
-                        song_data = self.analyzer.analyze_song(dest_audio_path, dest_json_path)
+                        self.analysis_progress_text = f"[{idx+1}/{len(selected_files)}] Auto-analyzing audio..."
+                        song_data = self.analyzer.analyze_song(dest_path, output_json)
                         self.analysis_success_data = song_data
-                else:
-                    # Standard non-zip copy and analyze
-                    self.analysis_progress_text = "Running Transient Peak Detection..."
-                    song_data = self.analyzer.analyze_song(dest_path, output_json)
-                    self.analysis_success_data = song_data
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self.analysis_error = str(e)
-            finally:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    
+                        success_count += 1
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    print(f"Error importing {filename}: {e}")
+                    self.analysis_error = f"Error importing {filename}: {e}"
+                finally:
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            # Post-import scan refresh
+            self.scan_songs()
+            self.update_difficulties_list()
+            
+            if success_count > 0:
+                self.analysis_progress_text = f"Successfully imported {success_count} songs!"
+                time.sleep(1.5)
+                self.state = "SONG_SELECT"
+            else:
+                self.analysis_progress_text = "Import failed."
+                
         self.analysis_thread = threading.Thread(target=thread_task)
         self.analysis_thread.start()
 
@@ -1211,8 +1864,8 @@ class App:
             root = tk.Tk()
             root.withdraw()
             root.attributes("-topmost", True)
-            file_path = filedialog.askopenfilename(
-                title="Select Song or Stepmania Zip (MP3/WAV/ZIP)",
+            file_paths = filedialog.askopenfilenames(
+                title="Select Song or Stepmania Zips (MP3/WAV/ZIP)",
                 filetypes=[
                     ("Supported Files", "*.mp3;*.wav;*.ogg;*.zip"),
                     ("Audio Files", "*.mp3;*.wav;*.ogg"),
@@ -1220,12 +1873,13 @@ class App:
                 ]
             )
             root.destroy()
-            return file_path
+            return file_paths
         except Exception as e:
             print(f"Error running native file dialog: {e}")
             return None
 
     def start_key_remapping(self, mode):
+        self.remap_return_state = self.state
         self.state = "REMAP"
         self.remap_mode = mode  # "p1_ddr", "p2_ddr", "p3_ddr", "p4_ddr", "p1_gamepad", ...
         self.active_remap_cell = None
@@ -1284,7 +1938,7 @@ class App:
         elif back_btn_rect.collidepoint(mx, my):
             sound_helper.play_back()
             input_manager.cancel_remap()
-            self.state = "SETTINGS"
+            self.state = getattr(self, "remap_return_state", "SETTINGS")
             return
 
     def reset_remapping_defaults(self):
@@ -1333,17 +1987,318 @@ class App:
             
         self.active_remap_cell = None
 
+    def get_lobby_keys_str(self, p_num):
+        dev = getattr(settings, f"device_p{p_num}", "Keyboard")
+        if dev == "Gamepad":
+            gp = getattr(settings, f"gamepad_p{p_num}", {})
+            parts = []
+            for d in ["left", "down", "up", "right"]:
+                val = gp.get(d)
+                parts.append(self.get_key_name_str(val))
+            return " | ".join(parts)
+        else:
+            k = getattr(settings, f"keys_p{p_num}", {})
+            parts = []
+            for d in ["left", "down", "up", "right"]:
+                val = k.get(d)
+                if isinstance(val, list) and val:
+                    parts.append(self.get_key_name_str(val[0]))
+                else:
+                    parts.append(self.get_key_name_str(val))
+            return " | ".join(parts)
+
+    def get_selected_song_total_measures(self):
+        if not self.display_list or self.song_index >= len(self.display_list):
+            return 100
+        item = self.display_list[self.song_index]
+        if item["type"] == "song":
+            song = item["song"]
+            duration = song.get("duration", 120.0)
+            bpm = song.get("bpm", 120.0)
+            beats = duration * (bpm / 60.0)
+            return max(1, int(math.ceil(beats / 4.0)))
+        return 100
+
     def process_gamepad_gameplay_input(self, p_idx, dir_name, is_active):
         dir_map = {"left": 0, "down": 1, "up": 2, "right": 3}
         if dir_name in dir_map:
             self.gameplay.trigger_input(dir_map[dir_name], is_active, p_idx)
 
+    def get_lobby_items(self):
+        mode = self.mode_options[self.mode_index]
+        items = []
+        
+        if mode == "PRACTICE":
+            items.append({
+                "label": "P1 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p1,
+                "key": "device_p1"
+            })
+            items.append({
+                "label": "P1 CHARACTER",
+                "type": "value",
+                "value_text": settings.character,
+                "key": "character"
+            })
+            items.append({
+                "label": "PLAYBACK SPEED",
+                "type": "value",
+                "value_text": f"{settings.playback_speed:.2f}x",
+                "key": "playback_speed"
+            })
+            items.append({
+                "label": "DIFFICULTY",
+                "type": "value",
+                "value_text": self.difficulties[self.p1_diff_index] if self.difficulties else "Medium",
+                "key": "difficulty"
+            })
+            items.append({
+                "label": "START MEASURE",
+                "type": "value",
+                "value_text": str(self.practice_start_measure),
+                "key": "practice_start_measure"
+            })
+            items.append({
+                "label": "END MEASURE",
+                "type": "value",
+                "value_text": str(self.practice_end_measure),
+                "key": "practice_end_measure"
+            })
+            items.append({
+                "label": "REMAP P1 KEYBOARD (DDR)",
+                "type": "link",
+                "action_mode": "p1_ddr",
+                "value_text": self.get_lobby_keys_str(1)
+            })
+            items.append({
+                "label": "START PRACTICE",
+                "type": "action",
+                "action": "start"
+            })
+            
+        elif mode == "SOLO":
+            items.append({
+                "label": "P1 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p1,
+                "key": "device_p1"
+            })
+            items.append({
+                "label": "P1 CHARACTER",
+                "type": "value",
+                "value_text": settings.character,
+                "key": "character"
+            })
+            items.append({
+                "label": "PLAYBACK SPEED",
+                "type": "value",
+                "value_text": f"{settings.playback_speed:.2f}x",
+                "key": "playback_speed"
+            })
+            items.append({
+                "label": "REMAP P1 KEYBOARD (DDR)",
+                "type": "link",
+                "action_mode": "p1_ddr",
+                "value_text": self.get_lobby_keys_str(1)
+            })
+            items.append({
+                "label": "PROCEED TO SONG SELECT",
+                "type": "action",
+                "action": "start"
+            })
+            
+        elif mode in ["CO-OP", "VERSUS"]:
+            items.append({
+                "label": "P1 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p1,
+                "key": "device_p1"
+            })
+            items.append({
+                "label": "P2 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p2,
+                "key": "device_p2"
+            })
+            items.append({
+                "label": "P1 CHARACTER",
+                "type": "value",
+                "value_text": settings.character,
+                "key": "character"
+            })
+            items.append({
+                "label": "P2 CHARACTER",
+                "type": "value",
+                "value_text": settings.character_p2,
+                "key": "character_p2"
+            })
+            items.append({
+                "label": "REMAP P1 KEYBOARD (DDR)",
+                "type": "link",
+                "action_mode": "p1_ddr",
+                "value_text": self.get_lobby_keys_str(1)
+            })
+            items.append({
+                "label": "REMAP P2 KEYBOARD (DDR)",
+                "type": "link",
+                "action_mode": "p2_ddr",
+                "value_text": self.get_lobby_keys_str(2)
+            })
+            items.append({
+                "label": "PROCEED TO SONG SELECT",
+                "type": "action",
+                "action": "start"
+            })
+            
+        elif mode == "FNF":
+            match_types = ["AI vs Human", "Human vs Human", "Human vs AI", "AI vs AI"]
+            active_match = match_types[getattr(self, "fnf_match_type_index", 0)]
+            items.append({
+                "label": "MATCH TYPE",
+                "type": "value",
+                "value_text": active_match,
+                "key": "match_type"
+            })
+            
+            p1_is_human = "Human" in active_match.split(" vs ")[0]
+            p2_is_human = "Human" in active_match.split(" vs ")[1]
+            
+            items.append({
+                "label": "P1 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p1 if p1_is_human else "CPU (AI)",
+                "key": "device_p1",
+                "disabled": not p1_is_human
+            })
+            items.append({
+                "label": "P2 INPUT DEVICE",
+                "type": "value",
+                "value_text": settings.device_p2 if p2_is_human else "CPU (AI)",
+                "key": "device_p2",
+                "disabled": not p2_is_human
+            })
+            items.append({
+                "label": "P1 CHARACTER",
+                "type": "value",
+                "value_text": settings.character,
+                "key": "character"
+            })
+            items.append({
+                "label": "P2 CHARACTER",
+                "type": "value",
+                "value_text": settings.character_p2,
+                "key": "character_p2"
+            })
+            if p1_is_human:
+                items.append({
+                    "label": "REMAP P1 KEYBOARD (DDR)",
+                    "type": "link",
+                    "action_mode": "p1_ddr",
+                    "value_text": self.get_lobby_keys_str(1)
+                })
+            if p2_is_human:
+                items.append({
+                    "label": "REMAP P2 KEYBOARD (DDR)",
+                    "type": "link",
+                    "action_mode": "p2_ddr",
+                    "value_text": self.get_lobby_keys_str(2)
+                })
+            items.append({
+                "label": "PROCEED TO SONG SELECT",
+                "type": "action",
+                "action": "start"
+            })
+            
+        return items
+
+    def adjust_lobby_setting(self, dir_val):
+        items = self.get_lobby_items()
+        if self.lobby_selection_index >= len(items):
+            return
+        item = items[self.lobby_selection_index]
+        if item["type"] != "value" or item.get("disabled", False):
+            return
+            
+        key = item["key"]
+        sound_helper.play_select()
+        
+        if key == "device_p1":
+            devices = ["Keyboard", "Gamepad", "Mat"]
+            curr_idx = devices.index(settings.device_p1)
+            settings.device_p1 = devices[(curr_idx + dir_val) % len(devices)]
+        elif key == "device_p2":
+            devices = ["Keyboard", "Gamepad", "Mat"]
+            curr_idx = devices.index(settings.device_p2)
+            settings.device_p2 = devices[(curr_idx + dir_val) % len(devices)]
+        elif key == "character":
+            curr_idx = self.characters_list.index(settings.character) if settings.character in self.characters_list else 0
+            settings.character = self.characters_list[(curr_idx + dir_val) % len(self.characters_list)]
+        elif key == "character_p2":
+            curr_idx = self.characters_list.index(settings.character_p2) if settings.character_p2 in self.characters_list else 0
+            settings.character_p2 = self.characters_list[(curr_idx + dir_val) % len(self.characters_list)]
+        elif key == "playback_speed":
+            speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0, 4.25, 4.5, 4.75, 5.0]
+            curr_idx = speeds.index(settings.playback_speed) if settings.playback_speed in speeds else 3
+            settings.playback_speed = speeds[(curr_idx + dir_val) % len(speeds)]
+        elif key == "match_type":
+            self.fnf_match_type_index = (self.fnf_match_type_index + dir_val) % 4
+        elif key == "difficulty":
+            if self.difficulties:
+                self.p1_diff_index = (self.p1_diff_index + dir_val) % len(self.difficulties)
+        elif key == "practice_start_measure":
+            total_m = self.get_selected_song_total_measures()
+            self.practice_start_measure = max(0, min(total_m, self.practice_start_measure + dir_val))
+            if self.practice_start_measure >= self.practice_end_measure:
+                self.practice_end_measure = min(total_m, self.practice_start_measure + 1)
+        elif key == "practice_end_measure":
+            total_m = self.get_selected_song_total_measures()
+            self.practice_end_measure = max(self.practice_start_measure + 1, min(total_m, self.practice_end_measure + dir_val))
+
+    def start_gameplay_from_overlay(self):
+        sound_helper.play_select()
+        
+        # Determine player difficulties
+        if settings.players == 2:
+            p1_diff = self.difficulties[self.p1_diff_index]
+            p2_diff = self.difficulties[self.p2_diff_index]
+            selected_diffs = [p1_diff, p2_diff]
+        else:
+            selected_diffs = self.difficulties[self.p1_diff_index]
+            
+        item = self.display_list[self.song_index]
+        selected_song = item["song"]
+        
+        # AI Opponent setup for FNF
+        p_is_ai = [False] * settings.players
+        if settings.game_mode == "FNF":
+            active_match = self.fnf_match_types[self.fnf_match_type_index]
+            p_is_ai[0] = "AI" in active_match.split(" vs ")[0]
+            p_is_ai[1] = "AI" in active_match.split(" vs ")[1]
+            
+        # Pass practice parameters if Practice mode is active
+        start_m = self.practice_start_measure if settings.game_mode == "Practice" else None
+        end_m = self.practice_end_measure if settings.game_mode == "Practice" else None
+        
+        self.gameplay = Gameplay(
+            selected_song, 
+            selected_diffs, 
+            settings.character, 
+            player_is_ai=p_is_ai,
+            practice_start_measure=start_m,
+            practice_end_measure=end_m
+        )
+        self.state = "GAMEPLAY"
+
     def update(self, dt):
+        self.celebration.update(dt)
         theme = settings.theme
         
         # Update warning notification timer
         if self.warning_notification_timer > 0:
             self.warning_notification_timer = max(0.0, self.warning_notification_timer - dt)
+        if getattr(self, "achievement_banner_timer", 0) > 0:
+            self.achievement_banner_timer = max(0.0, self.achievement_banner_timer - dt)
         
         # Check mouse hover focus
         if self.state in ["TITLE", "SONG_SELECT", "SETTINGS"]:
@@ -1361,6 +2316,17 @@ class App:
                     p["x"] = random.randint(0, SCREEN_WIDTH)
                     p["speed_y"] = random.uniform(-60, -20)
                     p["speed_x"] = random.uniform(-10, 10)
+
+        # Update calibration timing
+        if self.state == "CALIBRATION":
+            t_elapsed = time.time() - self.calib_start_time
+            curr_beat_idx = int(t_elapsed / self.calib_beat_interval)
+            if curr_beat_idx > self.calib_last_beat_index:
+                self.calib_last_beat_index = curr_beat_idx
+                sound_helper.play_select()
+                self.calib_flash = 1.0
+            if self.calib_flash > 0:
+                self.calib_flash = max(0.0, self.calib_flash - dt * 5.0)
 
         # Handle re-scan songs when analysis completes successfully
         if self.state == "ANALYZING":
@@ -1395,16 +2361,40 @@ class App:
                         "player_idx": p.player_idx,
                         "character_name": p.character_name,
                         "title": self.gameplay.metadata["title"],
-                        "difficulty": self.gameplay.difficulty,
+                        "difficulty": p.difficulty,
                         "bpm": self.gameplay.bpm,
                         "score": p.score,
                         "max_combo": p.max_combo,
                         "perfects": p.perfects,
-                        "greats": p.greats,
                         "goods": p.goods,
-                        "misses": p.misses
+                        "greats": p.greats,
+                        "misses": p.misses,
+                        "timing_offsets": p.timing_offsets,
+                        "duration": max([n["time"] for n in p.notes]) + 2.0 if p.notes else 60.0,
+                        "missed_last_note": p.notes[-1].get("missed", False) if p.notes else False
                     }
-                    self.update_high_score(self.songs_list[self.song_index], self.gameplay.difficulty, p_res)
+                    active_song = None
+                    for s in self.songs_list:
+                        if s["title"] == self.gameplay.metadata["title"]:
+                            active_song = s
+                            break
+                    if not active_song and self.songs_list:
+                        active_song = self.songs_list[0]
+                        
+                    self.last_gameplay_pause_duration = self.gameplay.elapsed_pause_time
+                    if active_song:
+                        self.update_high_score(active_song, p.difficulty, p_res)
+                    if p.player_idx == 0:
+                        new_unlocks = profile_manager.update_after_gameplay(
+                            self.gameplay.metadata["title"],
+                            p.difficulty,
+                            p_res,
+                            settings.playback_speed
+                        )
+                        if new_unlocks:
+                            self.celebration.trigger()
+                            self.newly_unlocked_achievements = new_unlocks
+                            self.achievement_banner_timer = 6.0
                     self.results_data.append(p_res)
                 self.gameplay.clean_up()
                 self.gameplay = None
@@ -1413,8 +2403,69 @@ class App:
     def handle_mouse_click(self, mx, my):
         w, h = SCREEN_WIDTH, SCREEN_HEIGHT
         
+        # --- PROFILE CREATION SCREEN ---
+        if self.state == "PROFILE_CREATION":
+            panel_h = 420
+            panel_y = h // 2 - panel_h // 2 - 20
+            
+            # Avatar grid coordinates (6 avatars inline)
+            av_start_x = w // 2 - 180
+            av_y = panel_y + 305
+            for idx in range(len(AVATARS)):
+                ax = av_start_x + idx * 60
+                av_rect = pygame.Rect(ax - 22, av_y - 22, 44, 44)
+                if av_rect.collidepoint(mx, my):
+                    self.profile_creation_avatar_idx = idx
+                    sound_helper.play_select()
+                    return
+            
+            # Confirm button click
+            btn_rect = pygame.Rect(w // 2 - 100, panel_y + 350, 200, 42)
+            if btn_rect.collidepoint(mx, my):
+                name = self.profile_creation_name.strip()
+                if name:
+                    avatar_id = AVATARS[self.profile_creation_avatar_idx]["id"]
+                    profile_manager.create_profile(name, avatar_id)
+                    profile_manager.load()
+                    sound_helper.play_select()
+                    self.state = "TITLE"
+                    self.title_index = 0
+            return
+
+        # --- PROFILE STATS SCREEN ---
+        elif self.state == "PROFILE_STATS":
+            tab_rects = {
+                "stats": pygame.Rect(w // 2 - 210, 140, 130, 36),
+                "scores": pygame.Rect(w // 2 - 60, 140, 150, 36),
+                "achievements": pygame.Rect(w // 2 + 110, 150, 150, 36)
+            }
+            for tab_name, rect in tab_rects.items():
+                if rect.collidepoint(mx, my):
+                    self.profile_tab = tab_name
+                    self.profile_scroll_idx = 0
+                    sound_helper.play_select()
+                    return
+
+            # Tagline selection
+            if self.profile_tab == "stats":
+                unlocked_tags = profile_manager.profile.get("unlocked_taglines", ["Beginner"])
+                for idx, tag in enumerate(unlocked_tags):
+                    row_y = 380 + idx * 30
+                    tag_rect = pygame.Rect(w // 2 - 220, row_y, 440, 26)
+                    if tag_rect.collidepoint(mx, my):
+                        profile_manager.profile["tagline"] = tag
+                        profile_manager.save()
+                        sound_helper.play_select()
+                        return
+
+            # Back button
+            back_rect = pygame.Rect(50, h - 60, 100, 36)
+            if back_rect.collidepoint(mx, my):
+                self.trigger_back()
+                return
+
         # --- EDITOR SCREEN ---
-        if self.state == "EDITOR" and self.editor:
+        elif self.state == "EDITOR" and self.editor:
             self.editor.handle_mouse_click(mx, my)
             return
 
@@ -1427,15 +2478,93 @@ class App:
                     self.title_index = idx
                     self.trigger_confirm()
                     return
+                    
+        elif self.state == "MODE_SELECT":
+            card_w = 165
+            card_h = 300
+            spacing = 20
+            total_w = len(self.mode_options) * card_w + (len(self.mode_options) - 1) * spacing
+            start_x = w // 2 - total_w // 2
+            card_y = 180
+            
+            for idx in range(len(self.mode_options)):
+                x_pos = start_x + idx * (card_w + spacing)
+                card_rect = pygame.Rect(x_pos, card_y, card_w, card_h)
+                if card_rect.collidepoint(mx, my):
+                    self.mode_index = idx
+                    self.trigger_confirm()
+                    return
+                    
+        elif self.state == "LOBBY":
+            lobby_items = self.get_lobby_items()
+            lobby_h = len(lobby_items) * 45
+            start_y = h // 2 - lobby_h // 2 - 20
+            card_w = 600
+            card_x = w // 2 - card_w // 2
+            
+            for idx, item in enumerate(lobby_items):
+                y_pos = start_y + idx * 45
+                row_rect = pygame.Rect(card_x, y_pos, card_w, 36)
+                if row_rect.collidepoint(mx, my):
+                    self.lobby_selection_index = idx
+                    
+                    if item["type"] == "value":
+                        if item["key"] in ["practice_start_measure", "practice_end_measure"]:
+                            # Clicked the text area to type directly
+                            if card_x + card_w - 130 <= mx <= card_x + card_w - 40:
+                                sound_helper.play_select()
+                                self.lobby_edit_mode = item["key"]
+                                self.lobby_edit_buffer = str(getattr(self, item["key"]))
+                            elif mx < card_x + card_w - 130:
+                                self.adjust_lobby_setting(-1)
+                            else:
+                                self.adjust_lobby_setting(1)
+                        else:
+                            if mx < card_x + card_w - 120:
+                                self.adjust_lobby_setting(-1)
+                            else:
+                                self.adjust_lobby_setting(1)
+                    else:
+                        self.trigger_confirm()
+                    return
+                    
+        elif self.state == "DIFFICULTY_SELECT_OVERLAY":
+            panel_w = 380
+            p1_x = 100
+            p1_y = 170
+            list_start_y_1 = p1_y + 60
+            row_h = 42
+            
+            for d_idx, df in enumerate(self.difficulties):
+                row_rect = pygame.Rect(p1_x + 20, list_start_y_1 + d_idx * row_h, panel_w - 40, 36)
+                if row_rect.collidepoint(mx, my):
+                    self.p1_diff_index = d_idx
+                    self.p1_ready = True
+                    sound_helper.play_select()
+                    
+            if settings.players == 2:
+                p2_x = w - 100 - panel_w
+                p2_y = 170
+                list_start_y_2 = p2_y + 60
+                for d_idx, df in enumerate(self.difficulties):
+                    row_rect = pygame.Rect(p2_x + 20, list_start_y_2 + d_idx * row_h, panel_w - 40, 36)
+                    if row_rect.collidepoint(mx, my):
+                        self.p2_diff_index = d_idx
+                        self.p2_ready = True
+                        sound_helper.play_select()
+                        
+            if self.p1_ready and self.p2_ready:
+                self.start_gameplay_from_overlay()
+            return
 
         # --- SONG SELECT SCREEN ---
         elif self.state == "SONG_SELECT":
             list_w = 450
             # Song List click check
             if (60 <= mx <= 490):
-                total_items = len(self.songs_list) + 1
+                total_items = len(self.display_list)
                 visible_rows = 9
-                start_row = max(0, min(self.song_index - visible_rows // 2, total_items - visible_rows))
+                start_row = max(0, min(self.song_index - visible_rows // 2, total_items - visible_rows)) if total_items > visible_rows else 0
                 
                 for row_idx in range(visible_rows):
                     item_idx = start_row + row_idx
@@ -1454,40 +2583,65 @@ class App:
             # Details Card click check
             card_x = 540
             card_w = 430
-            if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
-                # Check difficulty rows click (viewport-aligned)
-                list_start_y = getattr(self, "diff_list_start_y", 230)
-                displayed_diffs = getattr(self, "displayed_diffs", [])
-                row_h = 44
-                row_spacing = 6
-                max_visible = 6
-                start_idx = max(0, min(self.difficulty_index - max_visible // 2, len(displayed_diffs) - max_visible))
-                
-                for i in range(min(max_visible, len(displayed_diffs))):
-                    idx = start_idx + i
-                    y_pos = list_start_y + i * (row_h + row_spacing)
-                    row_rect = pygame.Rect(card_x + 30, y_pos, card_w - 60, row_h)
-                    if row_rect.collidepoint(mx, my):
-                        if self.difficulty_index == idx:
-                            # Clicking selected difficulty starts the game!
+            if self.display_list and self.song_index < len(self.display_list):
+                item = self.display_list[self.song_index]
+                if item["type"] == "song":
+                    # Check difficulty rows click (viewport-aligned)
+                    list_start_y = getattr(self, "diff_list_start_y", 230)
+                    displayed_diffs = getattr(self, "displayed_diffs", [])
+                    row_h = 36
+                    row_spacing = 5
+                    max_visible = 4
+                    
+                    is_multiplayer = (settings.players == 2 or settings.game_mode in ["Co-Op", "Versus", "FNF"])
+                    if is_multiplayer:
+                        proceed_rect = pygame.Rect(card_x + 30, list_start_y, card_w - 60, 48)
+                        if proceed_rect.collidepoint(mx, my):
                             self.trigger_confirm()
-                        else:
-                            self.difficulty_index = idx
-                            sound_helper.play_select()
+                            return
+                    else:
+                        start_idx = max(0, min(self.difficulty_index - max_visible // 2, len(displayed_diffs) - max_visible)) if displayed_diffs else 0
+                        for i in range(min(max_visible, len(displayed_diffs))):
+                            idx = start_idx + i
+                            y_pos = list_start_y + i * (row_h + row_spacing)
+                            row_rect = pygame.Rect(card_x + 30, y_pos, card_w - 60, row_h)
+                            if row_rect.collidepoint(mx, my):
+                                if self.difficulty_index == idx:
+                                    self.trigger_confirm()
+                                else:
+                                    self.difficulty_index = idx
+                                    sound_helper.play_select()
+                                return
+                    
+                    # Playback Speed selector clicked
+                    speed_y = getattr(self, "speed_y", 528)
+                    left_box = pygame.Rect(card_x + 190, speed_y, 26, 22)
+                    right_box = pygame.Rect(card_x + 268, speed_y, 26, 22)
+                    if left_box.collidepoint(mx, my):
+                        settings.playback_speed = max(0.5, settings.playback_speed - 0.25)
+                        sound_helper.play_select()
                         return
-                
-                # EDIT CHART and DELETE SONG Buttons clicked
-                edit_btn_rect = pygame.Rect(card_x + 30, self.btn_y, 175, 40)
-                delete_btn_rect = pygame.Rect(card_x + 225, self.btn_y, 175, 40)
-                
-                if edit_btn_rect.collidepoint(mx, my):
-                    self.start_chart_editor()
-                    return
-                elif delete_btn_rect.collidepoint(mx, my):
-                    selected_song = self.songs_list[self.song_index]
-                    if selected_song["filename"] != "Retro_Beat.wav":
-                        self.delete_song(selected_song)
+                    elif right_box.collidepoint(mx, my):
+                        settings.playback_speed = min(5.0, settings.playback_speed + 0.25)
+                        sound_helper.play_select()
                         return
+                    
+                    # EDIT CHART and DELETE SONG Buttons clicked
+                    btn_y = getattr(self, "btn_y", 575)
+                    edit_btn_rect = pygame.Rect(card_x + 30, btn_y, 175, 40)
+                    delete_btn_rect = pygame.Rect(card_x + 225, btn_y, 175, 40)
+                    
+                    if edit_btn_rect.collidepoint(mx, my):
+                        self.start_chart_editor()
+                        return
+                    elif delete_btn_rect.collidepoint(mx, my):
+                        if self.display_list and self.song_index < len(self.display_list):
+                            item = self.display_list[self.song_index]
+                            if item["type"] == "song":
+                                selected_song = item["song"]
+                                if selected_song["filename"] != "Retro_Beat.wav":
+                                    self.delete_song(selected_song)
+                                    return
             else:
                 # Upload Button clicked
                 if (card_x + 30 <= mx <= card_x + card_w - 30) and (570 <= my <= 630):
@@ -1509,7 +2663,7 @@ class App:
                 y_end = y_start + 30
                 if (w // 2 - 250 <= mx <= w // 2 + 250) and (y_start <= my <= y_end):
                     self.settings_index = idx
-                    if "REMAP" in opt or opt == "BACK":
+                    if "REMAP" in opt or opt == "BACK" or opt == "CALIBRATE LATENCY":
                         self.trigger_confirm()
                     else:
                         if mx > w // 2:
@@ -1579,6 +2733,109 @@ class App:
                     if self.settings_index != idx:
                         self.settings_index = idx
                     return
+    def get_song_cover_surface(self, item, theme):
+        """Retrieves or procedurally generates a cover surface for a song or group, sized 370x150."""
+        # Check cache
+        cache_key = None
+        if item["type"] == "group":
+            cache_key = f"group_{item['name']}"
+        elif item["type"] == "song":
+            cache_key = f"song_{item['song']['title']}"
+        elif item["type"] == "upload":
+            cache_key = "upload_banner"
+            
+        if cache_key in self.cover_cache:
+            return self.cover_cache[cache_key]
+            
+        # Create a new Surface
+        surf = pygame.Surface((370, 150), pygame.SRCALPHA)
+        
+        if item["type"] == "group":
+            # Procedural Group Album Cover
+            surf.fill((22, 18, 30))
+            pygame.draw.rect(surf, (255, 215, 0), (0, 0, 370, 150), width=2, border_radius=8)
+            # Folder Shape drawing
+            pygame.draw.rect(surf, (255, 215, 0), (30, 45, 120, 75), border_radius=4)
+            pygame.draw.polygon(surf, (255, 215, 0), [(30, 45), (60, 30), (90, 45)])
+            pygame.draw.rect(surf, (22, 18, 30), (38, 52, 104, 60), border_radius=2)
+            
+            # Text label
+            font_title = pygame.font.SysFont("Impact" if theme == "DDR-Retro" else "Segoe UI", 22, bold=True)
+            lbl = font_title.render(item["name"].upper(), True, (255, 255, 255))
+            surf.blit(lbl, (170, 45))
+            
+            font_sub = pygame.font.SysFont("Segoe UI", 14, bold=True)
+            lbl_sub = font_sub.render(f"{item['count']} Songs", True, (255, 215, 0))
+            surf.blit(lbl_sub, (170, 80))
+            
+        elif item["type"] == "song":
+            song_data = item["song"]
+            cover_path = song_data.get("cover_path")
+            
+            loaded = False
+            if cover_path and os.path.exists(cover_path):
+                try:
+                    img = pygame.image.load(cover_path).convert_alpha()
+                    # Scale to fit exactly
+                    scaled = pygame.transform.smoothscale(img, (370, 150))
+                    surf.blit(scaled, (0, 0))
+                    pygame.draw.rect(surf, (255, 255, 255, 120), (0, 0, 370, 150), width=1, border_radius=8)
+                    loaded = True
+                except Exception as e:
+                    print(f"Error loading cover image {cover_path}: {e}")
+                    
+            if not loaded:
+                # Procedural Abstract Neon Cover Art!
+                title_hash = sum(ord(c) for c in song_data["title"])
+                h1 = (title_hash % 360) / 360.0
+                h2 = ((title_hash + 120) % 360) / 360.0
+                
+                import colorsys
+                c1 = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h1, 0.8, 0.4))
+                c2 = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h2, 0.8, 0.8))
+                
+                # Gradient
+                for x in range(370):
+                    factor = x / 370.0
+                    col = (
+                        int(c1[0] + factor * (c2[0] - c1[0])),
+                        int(c1[1] + factor * (c2[1] - c1[1])),
+                        int(c1[2] + factor * (c2[2] - c1[2]))
+                    )
+                    pygame.draw.line(surf, col, (x, 0), (x, 150))
+                    
+                # Stylized vector cat face outline
+                cat_col = (255, 255, 255, 70)
+                cx, cy = 185, 75
+                pygame.draw.polygon(surf, cat_col, [(cx - 45, cy - 15), (cx - 35, cy - 45), (cx - 15, cy - 25)])
+                pygame.draw.polygon(surf, cat_col, [(cx + 45, cy - 15), (cx + 35, cy - 45), (cx + 15, cy - 25)])
+                pygame.draw.ellipse(surf, cat_col, (cx - 40, cy - 25, 80, 50), width=2)
+                pygame.draw.circle(surf, cat_col, (cx - 15, cy - 5), 3)
+                pygame.draw.circle(surf, cat_col, (cx + 15, cy - 5), 3)
+                pygame.draw.polygon(surf, cat_col, [(cx, cy + 5), (cx - 4, cy + 1), (cx + 4, cy + 1)])
+                
+                # Title text overlay on the bottom banner
+                pygame.draw.rect(surf, (0, 0, 0, 140), (0, 110, 370, 40))
+                font_title = pygame.font.SysFont("Segoe UI", 15, bold=True)
+                title_lbl = font_title.render(song_data["title"], True, (255, 255, 255))
+                surf.blit(title_lbl, (15, 120))
+                
+                pygame.draw.rect(surf, (255, 255, 255, 180), (0, 0, 370, 150), width=2, border_radius=8)
+                
+        elif item["type"] == "upload":
+            surf.fill((15, 12, 22))
+            pygame.draw.rect(surf, (0, 255, 204), (0, 0, 370, 150), width=2, border_radius=8)
+            # Stylized cloud arrow vector
+            pygame.draw.rect(surf, (0, 255, 204), (160, 60, 50, 40), border_radius=4)
+            pygame.draw.polygon(surf, (0, 255, 204), [(150, 60), (185, 30), (220, 60)])
+            pygame.draw.rect(surf, (15, 12, 22), (175, 70, 20, 30), border_radius=2)
+            
+            font_title = pygame.font.SysFont("Impact" if theme == "DDR-Retro" else "Segoe UI", 20, bold=True)
+            lbl = font_title.render("UPLOAD CUSTOM SONG", True, (255, 255, 255))
+            surf.blit(lbl, (185 - lbl.get_width()//2, 115))
+            
+        self.cover_cache[cache_key] = surf
+        return surf
 
     def draw(self):
         theme = settings.theme
@@ -1652,7 +2909,11 @@ class App:
             main_title_surf = title_font.render(title_text, True, text_color)
             self.screen.blit(main_title_surf, (w // 2 - main_title_surf.get_width() // 2, 150))
             
-            sub_title = desc_font.render("Furry & Fast Rhythm Game", True, accent_color)
+            if getattr(self, "last_tagline_state", None) != "TITLE":
+                import random
+                self.active_tagline = random.choice(self.taglines)
+                self.last_tagline_state = "TITLE"
+            sub_title = desc_font.render(self.active_tagline, True, accent_color)
             self.screen.blit(sub_title, (w // 2 - sub_title.get_width() // 2, 230))
             
             # Developer Credits
@@ -1687,8 +2948,7 @@ class App:
             list_h = 520
             pygame.draw.rect(self.screen, (20, 15, 35) if self.is_dark_theme(theme) else (235, 235, 240), (50, 120, list_w, list_h), border_radius=10)
             
-            # Add UPLOAD SONG option at the end of the song array
-            total_items = len(self.songs_list) + 1
+            total_items = len(self.display_list)
             visible_rows = 9
             start_row = max(0, min(self.song_index - visible_rows // 2, total_items - visible_rows))
             
@@ -1697,24 +2957,39 @@ class App:
                 if item_idx >= total_items:
                     break
                     
+                item = self.display_list[item_idx]
                 is_selected = (item_idx == self.song_index)
                 y_pos = 140 + row_idx * 50
                 
-                # Highlight bar
+                # Highlight bar color
                 if is_selected:
-                    bar_color = (35, 25, 60) if self.is_dark_theme(theme) else (220, 220, 225)
+                    if item["type"] == "group":
+                        bar_color = (80, 70, 20) if self.is_dark_theme(theme) else (255, 240, 190)
+                        row_color = (255, 215, 0)
+                    else:
+                        bar_color = (35, 25, 60) if self.is_dark_theme(theme) else (220, 220, 225)
+                        row_color = accent_color
                     pygame.draw.rect(self.screen, bar_color, (60, y_pos - 10, list_w - 20, 42), border_radius=5)
-                    row_color = accent_color
                 else:
-                    row_color = text_color
+                    if item["type"] == "group":
+                        row_color = (230, 190, 40)
+                    else:
+                        row_color = text_color
                 
-                if item_idx < len(self.songs_list):
-                    # Draw song title (truncated if too long to prevent overflowing column)
-                    song = self.songs_list[item_idx]
-                    song_lbl = render_truncated_text(desc_font, song["title"], 390, row_color)
+                if item["type"] == "group":
+                    # Draw Folder Group Header
+                    icon = "📂" if item["name"] in self.expanded_groups else "📁"
+                    grp_title = f"{icon}  {item['name'].upper()}  ({item['count']})"
+                    grp_lbl = render_truncated_text(desc_font, grp_title, 390, row_color)
+                    self.screen.blit(grp_lbl, (80, y_pos - 4))
+                    
+                elif item["type"] == "song":
+                    # Draw Song Title indented
+                    song_title = f"  - {item['song']['title']}"
+                    song_lbl = render_truncated_text(desc_font, song_title, 380, row_color)
                     self.screen.blit(song_lbl, (80, y_pos - 4))
-                else:
-                    # Draw UPLOAD option
+                    
+                elif item["type"] == "upload":
                     upload_lbl = desc_font.render("+ UPLOAD CUSTOM SONG...", True, row_color)
                     self.screen.blit(upload_lbl, (80, y_pos - 4))
             
@@ -1723,182 +2998,259 @@ class App:
             card_w = 430
             pygame.draw.rect(self.screen, (20, 15, 35) if self.is_dark_theme(theme) else (235, 235, 240), (card_x, 120, card_w, list_h), border_radius=10)
             
-            if len(self.songs_list) > 0 and self.song_index < len(self.songs_list):
-                selected_song = self.songs_list[self.song_index]
+            if total_items > 0 and self.song_index < total_items:
+                item = self.display_list[self.song_index]
                 
-                # Title (Dynamic height word wrap)
-                title_end_y = draw_wrapped_text(self.screen, menu_font, selected_song["title"], text_color, card_x + 30, 150, card_w - 60)
+                # Draw Album Cover surface
+                cover_surf = self.get_song_cover_surface(item, theme)
+                self.screen.blit(cover_surf, (card_x + 30, 135))
                 
-                # Duration & BPM (Meta)
-                meta_y = title_end_y + 12
-                dur_m = int(selected_song["duration"] // 60)
-                dur_s = int(selected_song["duration"] % 60)
-                meta_str = f"BPM: {selected_song['bpm']}   |   Length: {dur_m:02d}:{dur_s:02d}"
-                meta_surf = desc_font.render(meta_str, True, text_color)
-                self.screen.blit(meta_surf, (card_x + 30, meta_y))
-                
-                # Dynamic list of difficulties
-                tiny_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 12)
-                high_scores = selected_song.get("high_scores", {})
-                
-                # Fetch available difficulties
-                base_diffs = ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic"]
-                custom_diffs = []
-                for diff_name in selected_song["charts"].keys():
-                    if diff_name not in base_diffs:
-                        custom_diffs.append(diff_name)
-                displayed_diffs = base_diffs + custom_diffs
-                self.displayed_diffs = displayed_diffs
-                
-                list_start_y = meta_y + 45
-                self.diff_list_start_y = list_start_y
-                row_h = 44
-                row_spacing = 6
-                max_visible = 6
-                
-                # Auto-center scroll window around selected difficulty index
-                start_idx = max(0, min(self.difficulty_index - max_visible // 2, len(displayed_diffs) - max_visible))
-                
-                # Render section header
-                diff_hdr_surf = small_font.render("SELECT DIFFICULTY & PLAY:", True, text_color)
-                self.screen.blit(diff_hdr_surf, (card_x + 30, list_start_y - 20))
-                
-                # Draw scroll-up indicator if there are hidden difficulties above
-                if start_idx > 0:
-                    up_ind = tiny_font.render("▲", True, accent_color)
-                    self.screen.blit(up_ind, (card_x + card_w // 2 - up_ind.get_width() // 2, list_start_y - 12))
-                
-                for i in range(min(max_visible, len(displayed_diffs))):
-                    idx = start_idx + i
-                    diff_name = displayed_diffs[idx]
-                    is_selected = (idx == self.difficulty_index)
-                    y_pos = list_start_y + i * (row_h + row_spacing)
+                if item["type"] == "song":
+                    selected_song = item["song"]
                     
-                    diff_color = theme_manager.get_lane_color(idx % 5, theme)
-                    row_rect = pygame.Rect(card_x + 30, y_pos, card_w - 60, row_h)
-                    row_hover = row_rect.collidepoint(mx, my)
+                    # Title
+                    title_end_y = draw_wrapped_text(self.screen, menu_font, selected_song["title"], text_color, card_x + 30, 295, card_w - 60)
                     
-                    if is_selected:
-                        bg_col = (diff_color[0], diff_color[1], diff_color[2], 180)
-                        border_col = (255, 255, 255)
-                        text_col_row = (255, 255, 255)
-                    elif row_hover:
-                        bg_col = (50, 40, 75, 120) if self.is_dark_theme(theme) else (210, 210, 220, 120)
-                        border_col = diff_color
-                        text_col_row = text_color
+                    # Duration & BPM (Meta)
+                    meta_y = title_end_y + 10
+                    speed_mult = getattr(settings, "playback_speed", 1.0)
+                    display_bpm = selected_song["bpm"] * speed_mult
+                    dur_m = int((selected_song["duration"] / speed_mult) // 60)
+                    dur_s = int((selected_song["duration"] / speed_mult) % 60)
+                    if speed_mult != 1.0:
+                        meta_str = f"BPM: {display_bpm:.1f} ({speed_mult:.2f}x)   |   Length: {dur_m:02d}:{dur_s:02d}"
                     else:
-                        bg_col = (30, 22, 45, 100) if self.is_dark_theme(theme) else (220, 220, 225, 100)
-                        border_col = (50, 45, 70) if self.is_dark_theme(theme) else (200, 200, 205)
-                        text_col_row = text_color
+                        meta_str = f"BPM: {display_bpm:.1f}   |   Length: {dur_m:02d}:{dur_s:02d}"
+                    meta_surf = desc_font.render(meta_str, True, text_color)
+                    self.screen.blit(meta_surf, (card_x + 30, meta_y))
+                    
+                    # List of difficulties
+                    tiny_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 12)
+                    displayed_diffs = self.difficulties
+                    self.displayed_diffs = displayed_diffs
+                    list_start_y = meta_y + 40
+                    self.diff_list_start_y = list_start_y
+                    row_h = 36
+                    row_spacing = 5
+                    max_visible = 4
+                    
+                    is_multiplayer = (settings.players == 2 or settings.game_mode in ["Co-Op", "Versus", "FNF"])
+                    if is_multiplayer:
+                        diff_hdr_surf = small_font.render("MULTIPLAYER SETUP:", True, text_color)
+                        self.screen.blit(diff_hdr_surf, (card_x + 30, list_start_y - 20))
                         
-                    # Draw background with border
-                    row_surf = pygame.Surface((row_rect.width, row_rect.height), pygame.SRCALPHA)
-                    pygame.draw.rect(row_surf, bg_col, (0, 0, row_rect.width, row_rect.height), border_radius=6)
-                    pygame.draw.rect(row_surf, border_col, (0, 0, row_rect.width, row_rect.height), width=1 if not is_selected else 2, border_radius=6)
-                    self.screen.blit(row_surf, (row_rect.x, row_rect.y))
-                    
-                    # Difficulty Name (bold & clear)
-                    diff_surf = small_font.render(diff_name.upper(), True, text_col_row)
-                    self.screen.blit(diff_surf, (card_x + 45, y_pos + 4))
-                    
-                    # Steps Density
-                    if diff_name == "Dynamic":
-                        notes_count = len(selected_song["charts"].get("Medium", []))
-                        steps_str = f"{notes_count} notes (Dynamic)"
+                        proceed_rect = pygame.Rect(card_x + 30, list_start_y, card_w - 60, 48)
+                        proceed_hover = proceed_rect.collidepoint(mx, my)
+                        bg_col_proc = accent_color if proceed_hover else (35, 25, 60, 150)
+                        pygame.draw.rect(self.screen, bg_col_proc, proceed_rect, border_radius=8)
+                        pygame.draw.rect(self.screen, accent_color, proceed_rect, width=2, border_radius=8)
+                        
+                        proc_text = menu_font.render("READY & CHOOSE DIFFS", True, (255, 255, 255))
+                        self.screen.blit(proc_text, (proceed_rect.centerx - proc_text.get_width() // 2, proceed_rect.centery - proc_text.get_height() // 2))
+                        
+                        diff_list_end_y = list_start_y + 48
                     else:
-                        notes_count = len(selected_song["charts"].get(diff_name, []))
-                        steps_str = f"{notes_count} notes"
-                    steps_surf = tiny_font.render(steps_str, True, (210, 210, 220) if is_selected or self.is_dark_theme(theme) else (80, 80, 90))
-                    self.screen.blit(steps_surf, (card_x + 45, y_pos + 22))
+                        start_idx = max(0, min(self.difficulty_index - max_visible // 2, len(displayed_diffs) - max_visible))
+                        
+                        diff_hdr_surf = small_font.render("SELECT DIFFICULTY & PLAY:", True, text_color)
+                        self.screen.blit(diff_hdr_surf, (card_x + 30, list_start_y - 20))
+                        
+                        if start_idx > 0:
+                            up_ind = tiny_font.render("▲", True, accent_color)
+                            self.screen.blit(up_ind, (card_x + card_w // 2 - up_ind.get_width() // 2, list_start_y - 12))
+                            
+                        for i in range(min(max_visible, len(displayed_diffs))):
+                            idx = start_idx + i
+                            diff_name = displayed_diffs[idx]
+                            is_selected = (idx == self.difficulty_index)
+                            y_pos = list_start_y + i * (row_h + row_spacing)
+                            
+                            diff_color = theme_manager.get_lane_color(idx % 5, theme)
+                            row_rect = pygame.Rect(card_x + 30, y_pos, card_w - 60, row_h)
+                            row_hover = row_rect.collidepoint(mx, my)
+                            
+                            if is_selected:
+                                bg_col = (diff_color[0], diff_color[1], diff_color[2], 180)
+                                border_col = (255, 255, 255)
+                                text_col_row = (255, 255, 255)
+                            elif row_hover:
+                                bg_col = (50, 40, 75, 120) if self.is_dark_theme(theme) else (210, 210, 220, 120)
+                                border_col = diff_color
+                                text_col_row = text_color
+                            else:
+                                bg_col = (30, 22, 45, 100) if self.is_dark_theme(theme) else (220, 220, 225, 100)
+                                border_col = (50, 45, 70) if self.is_dark_theme(theme) else (200, 200, 205)
+                                text_col_row = text_color
+                                
+                            row_surf = pygame.Surface((row_rect.width, row_rect.height), pygame.SRCALPHA)
+                            pygame.draw.rect(row_surf, bg_col, (0, 0, row_rect.width, row_rect.height), border_radius=6)
+                            pygame.draw.rect(row_surf, border_col, (0, 0, row_rect.width, row_rect.height), width=1 if not is_selected else 2, border_radius=6)
+                            self.screen.blit(row_surf, (row_rect.x, row_rect.y))
+                            
+                            diff_text_to_draw = diff_name.upper()
+                            diff_surf = small_font.render(diff_text_to_draw, True, text_col_row)
+                            self.screen.blit(diff_surf, (card_x + 45, y_pos + 1))
+                            
+                            is_custom_diff = (diff_name not in ["Easy", "Medium", "Hard", "Harder", "Crazy", "Dynamic"])
+                            if is_custom_diff:
+                                custom_tag_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 10, bold=True)
+                                custom_tag_surf = custom_tag_font.render(" CUSTOM ", True, (0, 0, 0))
+                                
+                                tag_x = card_x + 45 + diff_surf.get_width() + 8
+                                tag_y = y_pos + 4
+                                tag_w = custom_tag_surf.get_width() + 4
+                                tag_h = custom_tag_surf.get_height() + 2
+                                
+                                pygame.draw.rect(self.screen, (25, 215, 0), (tag_x, tag_y, tag_w, tag_h), border_radius=3)
+                                self.screen.blit(custom_tag_surf, (tag_x + 2, tag_y + 1))
+                            
+                            chart_data = selected_song["charts"].get("Medium" if diff_name == "Dynamic" else diff_name, [])
+                            notes_count = len(chart_data)
+                            
+                            duration = selected_song.get("duration", 60.0)
+                            if duration <= 0:
+                                duration = 60.0
+                            density = notes_count / duration
+                            level = max(1, min(15, int(density * 2.5) + 1))
+                            
+                            steps_str = f"{notes_count} notes  |  BPM: {display_bpm:.0f}  |  Lv.{level}"
+                            if diff_name == "Dynamic":
+                                steps_str += " (Dyn)"
+                                
+                            steps_surf = tiny_font.render(steps_str, True, (210, 210, 220) if is_selected or self.is_dark_theme(theme) else (80, 80, 90))
+                            self.screen.blit(steps_surf, (card_x + 45, y_pos + 17))
+                            
+                            high_scores = selected_song.get("high_scores", {})
+                            record = high_scores.get(diff_name)
+                            if record:
+                                rec_str = f"Score: {record['score']:07d} ({record['grade']})"
+                                rec_surf = small_font.render(rec_str, True, (255, 215, 0) if not is_selected else (255, 255, 255))
+                            else:
+                                rec_str = "No Record"
+                                rec_surf = small_font.render(rec_str, True, (130, 120, 140) if not is_selected else (200, 200, 200))
+                            self.screen.blit(rec_surf, (card_x + card_w - 45 - rec_surf.get_width(), y_pos + 8))
+                            
+                        if start_idx + max_visible < len(displayed_diffs):
+                            down_ind = tiny_font.render("▼", True, accent_color)
+                            self.screen.blit(down_ind, (card_x + card_w // 2 - down_ind.get_width() // 2, list_start_y + max_visible * (row_h + row_spacing) - 4))
+                            
+                        visible_count = min(max_visible, len(displayed_diffs))
+                        diff_list_end_y = list_start_y + visible_count * (row_h + row_spacing)
                     
-                    # Record / Grade
-                    record = high_scores.get(diff_name)
-                    if record:
-                        rec_str = f"Score: {record['score']:07d} ({record['grade']})"
-                        rec_surf = small_font.render(rec_str, True, (255, 215, 0) if not is_selected else (255, 255, 255))
-                    else:
-                        rec_str = "No Record"
-                        rec_surf = small_font.render(rec_str, True, (130, 120, 140) if not is_selected else (200, 200, 200))
-                    self.screen.blit(rec_surf, (card_x + card_w - 45 - rec_surf.get_width(), y_pos + 12))
-                
-                # Draw scroll-down indicator if there are hidden difficulties below
-                if start_idx + max_visible < len(displayed_diffs):
-                    down_ind = tiny_font.render("▼", True, accent_color)
-                    self.screen.blit(down_ind, (card_x + card_w // 2 - down_ind.get_width() // 2, list_start_y + max_visible * (row_h + row_spacing) - 4))
-                
-                # Bottom Buttons placement (EDIT CHART and DELETE SONG)
-                btn_y = 580
-                self.btn_y = btn_y
-                edit_btn_rect = pygame.Rect(card_x + 30, btn_y, 175, 40)
-                delete_btn_rect = pygame.Rect(card_x + 225, btn_y, 175, 40)
-                
-                edit_hover = edit_btn_rect.collidepoint(mx, my)
-                delete_hover = delete_btn_rect.collidepoint(mx, my)
-                
-                # EDIT button
-                edit_color = (180, 40, 120) if edit_hover else (140, 30, 90)
-                if theme == "Minimalist":
-                    edit_color = (210, 210, 220) if edit_hover else (220, 220, 225)
-                pygame.draw.rect(self.screen, edit_color, edit_btn_rect, border_radius=6)
-                
-                btn_lbl_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 16, bold=True)
-                edit_btn_lbl = btn_lbl_font.render("EDIT CHART", True, (255, 255, 255) if (theme == "DDR-Retro" or self.is_dark_theme(theme)) else (45, 45, 55))
-                self.screen.blit(edit_btn_lbl, (edit_btn_rect.centerx - edit_btn_lbl.get_width() // 2, edit_btn_rect.centery - edit_btn_lbl.get_height() // 2))
-                
-                # DELETE button (only for non-default songs)
-                if selected_song["filename"] != "Retro_Beat.wav":
-                    del_color = (220, 50, 50) if delete_hover else (180, 40, 40)
-                    pygame.draw.rect(self.screen, del_color, delete_btn_rect, border_radius=6)
-                    del_lbl = btn_lbl_font.render("DELETE SONG", True, (255, 255, 255))
-                    self.screen.blit(del_lbl, (delete_btn_rect.centerx - del_lbl.get_width() // 2, delete_btn_rect.centery - del_lbl.get_height() // 2))
-                
-                # Key hint under buttons
-                hint_y = btn_y + 45
-                hint_str = "Press ENTER to Play Selected | E to Edit"
-                hint_surf = small_font.render(hint_str, True, text_color)
-                self.screen.blit(hint_surf, (card_x + card_w // 2 - hint_surf.get_width() // 2, hint_y))
-            else:
-                # Display Upload Card info
-                upload_title = menu_font.render("UPLOAD SONG", True, text_color)
-                self.screen.blit(upload_title, (card_x + 30, 150))
-                
-                info1 = desc_font.render("Add your own MP3 or WAV files!", True, text_color)
-                info2 = desc_font.render("Our AI-based analyzer will:", True, text_color)
-                self.screen.blit(info1, (card_x + 30, 220))
-                self.screen.blit(info2, (card_x + 30, 260))
-                
-                bullets = [
-                    "- Detect the rhythm & BPM",
-                    "- Locate all percussion peaks",
-                    "- Generate 5 synced charts",
-                    "- Save to songs library"
-                ]
-                for idx, b in enumerate(bullets):
-                    b_surf = desc_font.render(b, True, accent_color)
-                    self.screen.blit(b_surf, (card_x + 50, 310 + idx * 40))
+                    speed_y = diff_list_end_y + 12
+                    self.speed_y = speed_y
                     
-                upload_hint = desc_font.render("Press ENTER to Browse PC", True, accent_color)
-                self.screen.blit(upload_hint, (card_x + card_w // 2 - upload_hint.get_width() // 2, 580))
-                
+                    # Draw Playback Speed Selector on Card
+                    speed_lbl = small_font.render("PLAYBACK SPEED:", True, text_color)
+                    self.screen.blit(speed_lbl, (card_x + 30, speed_y + 4))
+                    
+                    # Left Arrow Box
+                    left_box = pygame.Rect(card_x + 190, speed_y, 26, 22)
+                    left_hover = left_box.collidepoint(mx, my)
+                    left_col = (50, 40, 75) if left_hover else (30, 22, 45)
+                    pygame.draw.rect(self.screen, left_col, left_box, border_radius=4)
+                    pygame.draw.rect(self.screen, (60, 55, 75), left_box, width=1, border_radius=4)
+                    left_text = tiny_font.render("◄", True, (0, 255, 204) if left_hover else text_color)
+                    self.screen.blit(left_text, (left_box.centerx - left_text.get_width() // 2, left_box.centery - left_text.get_height() // 2 - 1))
+                    
+                    # Value
+                    val_str = f"{speed_mult:.2f}x"
+                    val_surf = small_font.render(val_str, True, (0, 255, 204) if speed_mult != 1.0 else text_color)
+                    self.screen.blit(val_surf, (card_x + 242 - val_surf.get_width() // 2, speed_y + 2))
+                    
+                    # Right Arrow Box
+                    right_box = pygame.Rect(card_x + 268, speed_y, 26, 22)
+                    right_hover = right_box.collidepoint(mx, my)
+                    right_col = (50, 40, 75) if right_hover else (30, 22, 45)
+                    pygame.draw.rect(self.screen, right_col, right_box, border_radius=4)
+                    pygame.draw.rect(self.screen, (60, 55, 75), right_box, width=1, border_radius=4)
+                    right_text = tiny_font.render("►", True, (0, 255, 204) if right_hover else text_color)
+                    self.screen.blit(right_text, (right_box.centerx - right_text.get_width() // 2, right_box.centery - right_text.get_height() // 2 - 1))
+                    
+                    btn_y = speed_y + 45
+                    self.btn_y = btn_y
+                    edit_btn_rect = pygame.Rect(card_x + 30, btn_y, 175, 36)
+                    delete_btn_rect = pygame.Rect(card_x + 225, btn_y, 175, 36)
+                    
+                    edit_hover = edit_btn_rect.collidepoint(mx, my)
+                    delete_hover = delete_btn_rect.collidepoint(mx, my)
+                    
+                    edit_color = (180, 40, 120) if edit_hover else (140, 30, 90)
+                    pygame.draw.rect(self.screen, edit_color, edit_btn_rect, border_radius=6)
+                    btn_lbl_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 14, bold=True)
+                    edit_btn_lbl = btn_lbl_font.render("EDIT CHART", True, (255, 255, 255))
+                    self.screen.blit(edit_btn_lbl, (edit_btn_rect.centerx - edit_btn_lbl.get_width() // 2, edit_btn_rect.centery - edit_btn_lbl.get_height() // 2))
+                    
+                    if selected_song["filename"] != "Retro_Beat.wav":
+                        del_color = (220, 50, 50) if delete_hover else (180, 40, 40)
+                        pygame.draw.rect(self.screen, del_color, delete_btn_rect, border_radius=6)
+                        del_lbl = btn_lbl_font.render("DELETE SONG", True, (255, 255, 255))
+                        self.screen.blit(del_lbl, (delete_btn_rect.centerx - del_lbl.get_width() // 2, delete_btn_rect.centery - del_lbl.get_height() // 2))
+                        
+                elif item["type"] == "group":
+                    # Display Album/Folder contents
+                    title_end_y = draw_wrapped_text(self.screen, menu_font, f"ALBUM: {item['name'].upper()}", text_color, card_x + 30, 295, card_w - 60)
+                    pygame.draw.line(self.screen, (60, 55, 75), (card_x + 30, title_end_y + 10), (card_x + card_w - 30, title_end_y + 10), 1)
+                    
+                    y_list = title_end_y + 25
+                    lbl_inside = small_font.render("SONGS IN THIS ALBUM:", True, (255, 215, 0))
+                    self.screen.blit(lbl_inside, (card_x + 30, y_list))
+                    y_list += 30
+                    
+                    for song_idx, s in enumerate(item["songs"][:5]):
+                        s_lbl = desc_font.render(f"- {s['title']}", True, text_color)
+                        self.screen.blit(s_lbl, (card_x + 40, y_list))
+                        y_list += 28
+                        
+                    if len(item["songs"]) > 5:
+                        s_lbl = desc_font.render(f"... and {len(item['songs']) - 5} more songs", True, (160, 160, 165))
+                        self.screen.blit(s_lbl, (card_x + 40, y_list))
+                        
+                    hint_lbl = desc_font.render("Press ENTER to expand or collapse folder", True, accent_color)
+                    self.screen.blit(hint_lbl, (card_x + card_w // 2 - hint_lbl.get_width() // 2, 580))
+                    
+                elif item["type"] == "upload":
+                    # Display Upload Card info
+                    upload_title = menu_font.render("UPLOAD SONG", True, text_color)
+                    self.screen.blit(upload_title, (card_x + 30, 295))
+                    
+                    info1 = desc_font.render("Add your own MP3 or WAV files!", True, text_color)
+                    info2 = desc_font.render("Our AI-based analyzer will:", True, text_color)
+                    self.screen.blit(info1, (card_x + 30, 340))
+                    self.screen.blit(info2, (card_x + 30, 380))
+                    
+                    bullets = [
+                        "- Detect the rhythm & BPM",
+                        "- Locate all percussion peaks",
+                        "- Generate 5 synced charts",
+                        "- Save to songs library"
+                    ]
+                    for b_idx, b in enumerate(bullets):
+                        b_surf = desc_font.render(b, True, accent_color)
+                        self.screen.blit(b_surf, (card_x + 50, 420 + b_idx * 32))
+                        
+                    upload_hint = desc_font.render("Press ENTER to Browse PC", True, accent_color)
+                    self.screen.blit(upload_hint, (card_x + card_w // 2 - upload_hint.get_width() // 2, 580))
+                    
             footer = small_font.render("ESC: Back | Up/Down: Select Song | ENTER: Confirm", True, text_color)
             self.screen.blit(footer, (w // 2 - footer.get_width() // 2, h - 40))
-
-            # Floating High Scores Tooltip on Hover
+            
+            # Hover tooltip check
             mx, my = pygame.mouse.get_pos()
             hovered_song = None
-            if (60 <= mx <= 490) and len(self.songs_list) > 0:
-                total_items = len(self.songs_list) + 1
-                visible_rows = 9
+            if (60 <= mx <= 490) and total_items > 0:
                 start_row = max(0, min(self.song_index - visible_rows // 2, total_items - visible_rows))
                 for row_idx in range(visible_rows):
                     item_idx = start_row + row_idx
-                    if item_idx >= len(self.songs_list):
+                    if item_idx >= total_items:
                         break
                     y_pos = 140 + row_idx * 50
                     if (y_pos - 10 <= my <= y_pos + 32):
-                        hovered_song = self.songs_list[item_idx]
+                        itm = self.display_list[item_idx]
+                        if itm["type"] == "song":
+                            hovered_song = itm["song"]
                         break
-            
+                        
             if hovered_song:
                 high_scores = hovered_song.get("high_scores", {})
                 tx = mx + 20
@@ -1908,7 +3260,7 @@ class App:
                 if tx + tw > w:
                     tx = mx - tw - 10
                 if ty + th > h:
-                    ty = h - th - 10
+                    ty = h - th - 10- 10
                     
                 tooltip_surf = pygame.Surface((tw, th), pygame.SRCALPHA)
                 tooltip_surf.fill((20, 16, 32, 235) if self.is_dark_theme(theme) else (240, 240, 245, 245))
@@ -1952,6 +3304,260 @@ class App:
                 warn_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 20, bold=True)
                 warn_surf = warn_font.render(self.warning_notification, True, (255, 230, 235))
                 self.screen.blit(warn_surf, (box_x + box_w // 2 - warn_surf.get_width() // 2, box_y + box_h // 2 - warn_surf.get_height() // 2))
+
+        # --- DRAW STATE: MODE_SELECT ---
+        elif self.state == "MODE_SELECT":
+            # Draw Mode Selection Screen
+            title_text = "CHOOSE GAME MODE"
+            title_surf = title_font.render(title_text, True, text_color)
+            self.screen.blit(title_surf, (w // 2 - title_surf.get_width() // 2, 80))
+            
+            help_surf = small_font.render("USE LEFT / RIGHT ARROWS TO SELECT, ENTER TO CONFIRM, ESC TO GO BACK", True, (130, 120, 140) if self.is_dark_theme(theme) else (90, 80, 100))
+            self.screen.blit(help_surf, (w // 2 - help_surf.get_width() // 2, h - 80))
+            
+            card_w = 165
+            card_h = 300
+            spacing = 20
+            total_w = len(self.mode_options) * card_w + (len(self.mode_options) - 1) * spacing
+            start_x = w // 2 - total_w // 2
+            card_y = 180
+            
+            for idx, opt in enumerate(self.mode_options):
+                is_selected = (idx == self.mode_index)
+                x_pos = start_x + idx * (card_w + spacing)
+                card_rect = pygame.Rect(x_pos, card_y, card_w, card_h)
+                
+                # Check hover
+                is_hover = card_rect.collidepoint(mx, my)
+                if is_hover and not is_selected:
+                    self.mode_index = idx
+                    is_selected = True
+                
+                # Draw Card background
+                bg_col = (40, 20, 75, 200) if is_selected else (15, 10, 25, 160)
+                if not self.is_dark_theme(theme):
+                    bg_col = (220, 210, 235, 200) if is_selected else (240, 240, 245, 160)
+                    
+                border_col = accent_color if is_selected else ((60, 50, 85) if self.is_dark_theme(theme) else (200, 200, 205))
+                
+                # Card surface
+                card_surf = pygame.Surface((card_w, card_h), pygame.SRCALPHA)
+                pygame.draw.rect(card_surf, bg_col, (0, 0, card_w, card_h), border_radius=12)
+                pygame.draw.rect(card_surf, border_col, (0, 0, card_w, card_h), width=3 if is_selected else 1, border_radius=12)
+                
+                # Draw visual graphic based on mode
+                graphic_y = 120
+                if opt == "SOLO":
+                    pygame.draw.circle(card_surf, border_col, (card_w // 2, graphic_y), 30, width=2)
+                    pygame.draw.circle(card_surf, accent_color if is_selected else border_col, (card_w // 2, graphic_y + 4), 14)
+                elif opt == "CO-OP":
+                    pygame.draw.circle(card_surf, border_col, (card_w // 2 - 15, graphic_y), 24, width=2)
+                    pygame.draw.circle(card_surf, accent_color if is_selected else border_col, (card_w // 2 + 15, graphic_y), 24, width=2)
+                elif opt == "VERSUS":
+                    pygame.draw.line(card_surf, border_col, (card_w // 2 - 25, graphic_y - 25), (card_w // 2 + 25, graphic_y + 25), width=4)
+                    pygame.draw.line(card_surf, accent_color if is_selected else border_col, (card_w // 2 + 25, graphic_y - 25), (card_w // 2 - 25, graphic_y + 25), width=4)
+                elif opt == "FNF":
+                    pygame.draw.circle(card_surf, border_col, (card_w // 2, graphic_y - 10), 16)
+                    pygame.draw.line(card_surf, accent_color if is_selected else border_col, (card_w // 2, graphic_y + 6), (card_w // 2, graphic_y + 30), width=6)
+                elif opt == "PRACTICE":
+                    pygame.draw.circle(card_surf, border_col, (card_w // 2, graphic_y), 25, width=2)
+                    pygame.draw.circle(card_surf, accent_color if is_selected else border_col, (card_w // 2, graphic_y), 10)
+                
+                # Option text
+                opt_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 24, bold=True)
+                text_surf = opt_font.render(opt, True, text_color)
+                card_surf.blit(text_surf, (card_w // 2 - text_surf.get_width() // 2, 30))
+                
+                # Mode description
+                desc_lines = []
+                if opt == "SOLO":
+                    desc_lines = ["1 Player", "Standard DDR", "Speed Mods"]
+                elif opt == "CO-OP":
+                    desc_lines = ["2 Players", "Shared Score", "Team Work"]
+                elif opt == "VERSUS":
+                    desc_lines = ["2 Players", "Head-to-head", "Battle Mode"]
+                elif opt == "FNF":
+                    desc_lines = ["2 Players", "Call & Response", "Vocal Duel"]
+                elif opt == "PRACTICE":
+                    desc_lines = ["1 Player", "Loop Section", "Improve Skill"]
+                    
+                for i, line in enumerate(desc_lines):
+                    line_surf = small_font.render(line, True, (210, 200, 220) if is_selected else (140, 130, 150))
+                    card_surf.blit(line_surf, (card_w // 2 - line_surf.get_width() // 2, 200 + i * 22))
+                
+                self.screen.blit(card_surf, (x_pos, card_y))
+
+        # --- DRAW STATE: LOBBY ---
+        elif self.state == "LOBBY":
+            mode_name = self.mode_options[self.mode_index]
+            title_text = f"{mode_name} MODE LOBBY"
+            title_surf = title_font.render(title_text, True, text_color)
+            self.screen.blit(title_surf, (w // 2 - title_surf.get_width() // 2, 60))
+            
+            help_surf = small_font.render("USE UP / DOWN ARROWS TO NAVIGATE, LEFT / RIGHT TO CHANGE VALUES, ENTER TO PROCEED, ESC TO GO BACK", True, (130, 120, 140) if self.is_dark_theme(theme) else (90, 80, 100))
+            self.screen.blit(help_surf, (w // 2 - help_surf.get_width() // 2, h - 50))
+            
+            lobby_items = self.get_lobby_items()
+            lobby_h = len(lobby_items) * 45
+            start_y = h // 2 - lobby_h // 2 - 20
+            
+            card_w = 600
+            card_x = w // 2 - card_w // 2
+            
+            bg_panel_col = (20, 15, 30, 200) if self.is_dark_theme(theme) else (235, 235, 240, 200)
+            pygame.draw.rect(self.screen, bg_panel_col, (card_x - 30, start_y - 20, card_w + 60, lobby_h + 40), border_radius=12)
+            pygame.draw.rect(self.screen, (50, 45, 70) if self.is_dark_theme(theme) else (200, 200, 205), (card_x - 30, start_y - 20, card_w + 60, lobby_h + 40), width=1, border_radius=12)
+            
+            for idx, item in enumerate(lobby_items):
+                is_selected = (idx == self.lobby_selection_index)
+                y_pos = start_y + idx * 45
+                
+                row_rect = pygame.Rect(card_x, y_pos, card_w, 36)
+                if row_rect.collidepoint(mx, my):
+                    self.lobby_selection_index = idx
+                    is_selected = True
+                
+                if is_selected:
+                    sel_col = (50, 40, 75, 160) if self.is_dark_theme(theme) else (210, 210, 225, 160)
+                    pygame.draw.rect(self.screen, sel_col, row_rect, border_radius=6)
+                    pygame.draw.rect(self.screen, accent_color, row_rect, width=1, border_radius=6)
+                    
+                lbl_color = accent_color if is_selected else text_color
+                lbl_surf = small_font.render(item["label"], True, lbl_color)
+                self.screen.blit(lbl_surf, (card_x + 15, y_pos + 6))
+                
+                if item["type"] == "value":
+                    if getattr(self, "lobby_edit_mode", None) == item["key"]:
+                        cursor = "_" if (int(time.time() * 2) % 2 == 0) else ""
+                        val_str = f"[{self.lobby_edit_buffer}{cursor}]"
+                        val_surf = small_font.render(val_str, True, (255, 128, 0))
+                    else:
+                        val_str = item["value_text"]
+                        val_surf = small_font.render(f"◄  {val_str}  ►", True, text_color)
+                    self.screen.blit(val_surf, (card_x + card_w - val_surf.get_width() - 15, y_pos + 6))
+                elif item["type"] == "link":
+                    link_str = "PRESS ENTER TO REMAP" if is_selected else item.get("value_text", "PRESS ENTER TO REMAP")
+                    link_surf = small_font.render(link_str, True, (0, 255, 204) if is_selected else (130, 120, 140))
+                    self.screen.blit(link_surf, (card_x + card_w - link_surf.get_width() - 15, y_pos + 6))
+                elif item["type"] == "action":
+                    action_surf = small_font.render("CONFIRM", True, (0, 255, 100) if is_selected else text_color)
+                    self.screen.blit(action_surf, (card_x + card_w - action_surf.get_width() - 15, y_pos + 6))
+
+        # --- DRAW STATE: DIFFICULTY_SELECT_OVERLAY ---
+        elif self.state == "DIFFICULTY_SELECT_OVERLAY":
+            item = self.display_list[self.song_index]
+            selected_song = item["song"]
+            
+            # Draw dimmer background with song cover
+            self.screen.blit(self.get_song_cover_surface(item, theme), (w // 2 - 185, 30))
+            
+            overlay_rect = pygame.Rect(80, 150, w - 160, h - 220)
+            bg_panel_col = (15, 10, 25, 230) if self.is_dark_theme(theme) else (240, 240, 245, 230)
+            pygame.draw.rect(self.screen, bg_panel_col, overlay_rect, border_radius=12)
+            pygame.draw.rect(self.screen, accent_color, overlay_rect, width=2, border_radius=12)
+            
+            # Title
+            title_surf = menu_font.render(f"CHOOSE DIFFICULTY: {selected_song['title'].upper()}", True, text_color)
+            self.screen.blit(title_surf, (w // 2 - title_surf.get_width() // 2, 90))
+            
+            # Panels
+            panel_w = 380
+            panel_h = 360
+            
+            # Draw Player 1 Panel
+            p1_x = 100
+            p1_y = 170
+            p1_rect = pygame.Rect(p1_x, p1_y, panel_w, panel_h)
+            pygame.draw.rect(self.screen, (25, 20, 45) if self.is_dark_theme(theme) else (225, 225, 235), p1_rect, border_radius=8)
+            pygame.draw.rect(self.screen, (50, 40, 75) if self.is_dark_theme(theme) else (190, 190, 205), p1_rect, width=1, border_radius=8)
+            
+            p1_hdr = small_font.render("PLAYER 1 (LEFT)", True, (0, 255, 204))
+            self.screen.blit(p1_hdr, (p1_x + 20, p1_y + 15))
+            
+            # Draw Player 2 Panel
+            p2_x = w - 100 - panel_w
+            p2_y = 170
+            p2_rect = pygame.Rect(p2_x, p2_y, panel_w, panel_h)
+            
+            if settings.players == 2:
+                pygame.draw.rect(self.screen, (25, 20, 45) if self.is_dark_theme(theme) else (225, 225, 235), p2_rect, border_radius=8)
+                pygame.draw.rect(self.screen, (50, 40, 75) if self.is_dark_theme(theme) else (190, 190, 205), p2_rect, width=1, border_radius=8)
+                
+                # Check FNF mode match type to see if AI
+                active_match = self.fnf_match_types[self.fnf_match_type_index] if settings.game_mode == "FNF" else ""
+                p2_is_ai = False
+                if active_match and len(active_match.split(" vs ")) > 1:
+                    p2_is_ai = "AI" in active_match.split(" vs ")[1]
+                p2_label = "PLAYER 2 (AI OPPONENT)" if p2_is_ai else "PLAYER 2 (RIGHT)"
+                
+                p2_hdr = small_font.render(p2_label, True, (255, 45, 85))
+                self.screen.blit(p2_hdr, (p2_x + 20, p2_y + 15))
+            else:
+                # 1 Player mode: Player 2 panel is empty/hidden
+                pygame.draw.rect(self.screen, (15, 12, 28) if self.is_dark_theme(theme) else (235, 235, 240), p2_rect, border_radius=8)
+                p2_hdr = small_font.render("NO OPPONENT", True, (120, 110, 130))
+                self.screen.blit(p2_hdr, (p2_x + 20, p2_y + 15))
+                
+                mid_lbl = small_font.render("SOLO MODE ACTIVE", True, (130, 120, 140))
+                self.screen.blit(mid_lbl, (p2_x + panel_w // 2 - mid_lbl.get_width() // 2, p2_y + panel_h // 2 - 10))
+            
+            # Render difficulties lists inside panels
+            tiny_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 12)
+            for p_idx in [1, 2]:
+                if p_idx == 2 and settings.players == 1:
+                    continue
+                    
+                px = p1_x if p_idx == 1 else p2_x
+                py = p1_y if p_idx == 1 else p2_y
+                p_ready = self.p1_ready if p_idx == 1 else self.p2_ready
+                p_diff_idx = self.p1_diff_index if p_idx == 1 else self.p2_diff_index
+                
+                if p_ready:
+                    # Draw Ready Banner
+                    r_lbl = menu_font.render("READY!", True, (0, 255, 100))
+                    self.screen.blit(r_lbl, (px + panel_w // 2 - r_lbl.get_width() // 2, py + panel_h // 2 - 30))
+                    
+                    h_lbl = small_font.render("PRESS BACKSPACE/SHIFT TO CANCEL", True, (130, 120, 140))
+                    self.screen.blit(h_lbl, (px + panel_w // 2 - h_lbl.get_width() // 2, py + panel_h // 2 + 20))
+                else:
+                    # Draw difficulty options list
+                    list_start_y = py + 60
+                    row_h = 42
+                    
+                    for d_idx, df in enumerate(self.difficulties):
+                        is_sel = (d_idx == p_diff_idx)
+                        row_rect = pygame.Rect(px + 20, list_start_y + d_idx * row_h, panel_w - 40, 36)
+                        
+                        # Mouse hover select
+                        if row_rect.collidepoint(mx, my):
+                            if p_idx == 1:
+                                self.p1_diff_index = d_idx
+                            else:
+                                self.p2_diff_index = d_idx
+                            is_sel = True
+                        
+                        bg_c = (50, 40, 75) if is_sel else (30, 22, 45)
+                        if not self.is_dark_theme(theme):
+                            bg_c = (210, 210, 225) if is_sel else (240, 240, 245)
+                            
+                        border_c = accent_color if is_sel else ((60, 55, 75) if self.is_dark_theme(theme) else (200, 200, 205))
+                        
+                        pygame.draw.rect(self.screen, bg_c, row_rect, border_radius=6)
+                        pygame.draw.rect(self.screen, border_c, row_rect, width=2 if is_sel else 1, border_radius=6)
+                        
+                        df_color = theme_manager.get_lane_color(d_idx % 5, theme)
+                        pygame.draw.circle(self.screen, df_color, (row_rect.x + 20, row_rect.centery), 6)
+                        
+                        df_surf = small_font.render(df.upper(), True, text_color)
+                        self.screen.blit(df_surf, (row_rect.x + 40, row_rect.centery - df_surf.get_height() // 2))
+                        
+                        # Note count
+                        notes_count = len(selected_song["charts"].get(df if df != "Dynamic" else "Medium", []))
+                        n_surf = tiny_font.render(f"{notes_count} notes", True, (130, 120, 140))
+                        self.screen.blit(n_surf, (row_rect.x + row_rect.width - n_surf.get_width() - 15, row_rect.centery - n_surf.get_height() // 2))
+                        
+            footer = small_font.render("P1: WASD/Arrows, Enter to ready | P2: IJKL/Numpad, Keypad Enter/Tab to ready | ESC: Back", True, text_color)
+            self.screen.blit(footer, (w // 2 - footer.get_width() // 2, h - 40))
 
         # --- DRAW STATE: ANALYZING ---
         elif self.state == "ANALYZING":
@@ -2002,17 +3608,95 @@ class App:
                 pygame.draw.circle(self.screen, pad_col, (int(paw_x + dx), int(paw_y + dy)), 6)
             
             # Cute Cat Quote/Tip
-            tip_str = "🐈 Tip: Don't miss too many notes. Even cats only get nine lives."
-            tip_surf = small_font.render(tip_str, True, (244, 143, 177) if self.is_dark_theme(theme) else (180, 50, 90))
+            if getattr(self, "last_tip_state", None) != "ANALYZING":
+                import random
+                self.active_tip = random.choice(self.loading_tips)
+                self.last_tip_state = "ANALYZING"
+            tip_surf = small_font.render(self.active_tip, True, (244, 143, 177) if self.is_dark_theme(theme) else (180, 50, 90))
             self.screen.blit(tip_surf, (w // 2 - tip_surf.get_width() // 2, h // 2 + 140))
 
         # --- DRAW STATE: GAMEPLAY ---
         elif self.state == "GAMEPLAY" and self.gameplay:
-            self.gameplay.draw(self.screen)
+            if getattr(self.gameplay, "shake_timer", 0.0) > 0.0:
+                temp_surf = pygame.Surface((w, h))
+                self.gameplay.draw(temp_surf)
+                import random
+                dx = random.randint(-int(self.gameplay.shake_intensity), int(self.gameplay.shake_intensity))
+                dy = random.randint(-int(self.gameplay.shake_intensity), int(self.gameplay.shake_intensity))
+                self.screen.blit(temp_surf, (dx, dy))
+            else:
+                self.gameplay.draw(self.screen)
 
         # --- DRAW STATE: EDITOR ---
         elif self.state == "EDITOR" and self.editor:
             self.editor.draw(self.screen)
+
+        # --- DRAW STATE: CALIBRATION ---
+        elif self.state == "CALIBRATION":
+            # Draw header
+            header_surf = menu_font.render("AUDIO LATENCY CALIBRATOR", True, text_color)
+            self.screen.blit(header_surf, (w // 2 - header_surf.get_width() // 2, 80))
+            
+            sub_surf = desc_font.render("Tap SPACE exactly on the chime metronome beats!", True, text_color)
+            self.screen.blit(sub_surf, (w // 2 - sub_surf.get_width() // 2, 130))
+            
+            # Pulsing Metronome Circle
+            pulse_r = int(50 + 20 * self.calib_flash)
+            pulse_color = (max(0, min(255, accent_color[0] + int(self.calib_flash * 100))),
+                           max(0, min(255, accent_color[1] + int(self.calib_flash * 100))),
+                           max(0, min(255, accent_color[2] + int(self.calib_flash * 100))))
+            
+            # Draw pulse circles
+            pygame.draw.circle(self.screen, pulse_color, (w // 2, h // 2 - 80), pulse_r)
+            pygame.draw.circle(self.screen, text_color, (w // 2, h // 2 - 80), 50, width=3)
+            
+            # Draw Beat indicator dot/lines in the center of circle
+            beat_lbl = title_font.render("BEAT", True, (255, 255, 255) if self.calib_flash > 0.5 else text_color)
+            self.screen.blit(beat_lbl, (w // 2 - beat_lbl.get_width() // 2, h // 2 - 110))
+            
+            # Target line & tap history timeline (Y = h // 2 + 100)
+            timeline_y = h // 2 + 70
+            pygame.draw.line(self.screen, (100, 100, 110), (w // 2 - 200, timeline_y), (w // 2 + 200, timeline_y), 3)
+            # Center target line (green)
+            pygame.draw.line(self.screen, (0, 255, 128), (w // 2, timeline_y - 20), (w // 2, timeline_y + 20), 4)
+            
+            # Early / Late labels
+            early_lbl = small_font.render("EARLY (-150ms)", True, (255, 100, 100) if self.is_dark_theme(theme) else (200, 50, 50))
+            late_lbl = small_font.render("LATE (+150ms)", True, (255, 100, 100) if self.is_dark_theme(theme) else (200, 50, 50))
+            self.screen.blit(early_lbl, (w // 2 - 200, timeline_y - 35))
+            self.screen.blit(late_lbl, (w // 2 + 200 - late_lbl.get_width(), timeline_y - 35))
+            
+            # Draw tap markers on the timeline (mapping +/-150ms to +/- 200px)
+            for diff in self.calib_taps:
+                diff_ms = diff * 1000.0
+                offset_x = int((diff_ms / 150.0) * 200)
+                offset_x = max(-200, min(200, offset_x))
+                # Draw a glowing dot
+                pygame.draw.circle(self.screen, (255, 215, 0), (w // 2 + offset_x, timeline_y), 8)
+                pygame.draw.circle(self.screen, (255, 255, 255), (w // 2 + offset_x, timeline_y), 8, width=1)
+                
+            # Calculations & stats
+            avg_offset_s = sum(self.calib_taps) / len(self.calib_taps) if self.calib_taps else 0.0
+            avg_offset_ms = int(avg_offset_s * 1000)
+            
+            status_str = f"TAPS RECORDED: {len(self.calib_taps)} / 12"
+            status_surf = desc_font.render(status_str, True, text_color)
+            self.screen.blit(status_surf, (w // 2 - status_surf.get_width() // 2, timeline_y + 40))
+            
+            if self.calib_taps:
+                sign = "+" if avg_offset_ms >= 0 else ""
+                offset_str = f"CALCULATED LATENCY OFFSET: {sign}{avg_offset_ms} ms"
+                color_offset = (0, 255, 128) if abs(avg_offset_ms) < 30 else (255, 165, 0)
+                offset_surf = menu_font.render(offset_str, True, color_offset)
+                self.screen.blit(offset_surf, (w // 2 - offset_surf.get_width() // 2, timeline_y + 75))
+            else:
+                offset_surf = desc_font.render("TAP SPACE TO CALCULATE LATENCY...", True, (130, 130, 140))
+                self.screen.blit(offset_surf, (w // 2 - offset_surf.get_width() // 2, timeline_y + 75))
+                
+            # Control instructions at bottom
+            footer1_str = "ENTER: Save & Apply Offset  |  ESC: Discard & Exit"
+            footer1_surf = desc_font.render(footer1_str, True, accent_color)
+            self.screen.blit(footer1_surf, (w // 2 - footer1_surf.get_width() // 2, h - 90))
 
         # --- DRAW STATE: SETTINGS ---
         elif self.state == "SETTINGS":
@@ -2066,11 +3750,24 @@ class App:
                     value_text = f"{int(settings.sfx_volume * 100)}%"
                 elif opt == "SHOW CONSOLE":
                     value_text = "ENABLED" if settings.show_console else "DISABLED"
+                elif opt == "ASSIST TICK":
+                    value_text = "ENABLED" if settings.assist_tick else "DISABLED"
+                elif opt == "AUDIO OFFSET":
+                    value_text = f"{int(settings.audio_offset * 1000)} ms"
+                elif opt == "PROPORTIONAL SCORING":
+                    value_text = "ON (ACCURACY)" if getattr(settings, "proportional_scoring", False) else "OFF (FLAT)"
+                elif opt == "MISS PENALTY":
+                    curr_pen = getattr(settings, "miss_penalty", 0)
+                    value_text = "DISABLED" if curr_pen == 0 else f"-{curr_pen} PTS"
+                elif opt == "PLAYBACK SPEED":
+                    value_text = f"{getattr(settings, 'playback_speed', 1.0):.2f}x"
+                elif opt == "CALIBRATE LATENCY":
+                    value_text = "[ Press Enter ]"
                 elif "REMAP" in opt:
                     value_text = "[ Press Enter ]"
                 
                 # Print Left/Right indicator on selections
-                if opt in ["PLAYERS", "GAME MODE", "MUSIC VOLUME", "SFX VOLUME", "SHOW CONSOLE", "THEME"] or ("CHARACTER" in opt) or ("DEVICE" in opt):
+                if opt in ["PLAYERS", "GAME MODE", "MUSIC VOLUME", "SFX VOLUME", "SHOW CONSOLE", "THEME", "AUDIO OFFSET", "ASSIST TICK", "PROPORTIONAL SCORING", "MISS PENALTY", "PLAYBACK SPEED"] or ("CHARACTER" in opt) or ("DEVICE" in opt):
                     if is_selected:
                         value_text = f"<  {value_text}  >"
 
@@ -2308,7 +4005,7 @@ class App:
                 
                 # Grade
                 grade = res.get("grade", "D")
-                grade_color = (255, 215, 0) if grade == "AAA" else (0, 255, 128) if grade == "AA" else accent_color
+                grade_color = (255, 215, 0) if grade in ["SSS", "AAA"] else (255, 128, 0) if grade == "S" else (0, 255, 128) if grade in ["AA", "A"] else accent_color
                 grade_font = desc_font if num_results >= 3 else title_font
                 grade_surf = grade_font.render(grade, True, grade_color)
                 self.screen.blit(grade_surf, (card_x + card_w - 15 - grade_surf.get_width(), card_y + 10))
@@ -2333,8 +4030,401 @@ class App:
                     self.screen.blit(lbl_s, (card_x + 15, row_y))
                     self.screen.blit(val_s, (card_x + card_w - 15 - val_s.get_width(), row_y))
                     
+                # Draw badges (e.g. ALL PERFECT, FULL COMBO, NO MISSES)
+                p_badges = res.get("badges", [])
+                badge_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 12, bold=True)
+                for b_idx, b_text in enumerate(p_badges):
+                    badge_surf = badge_font.render(b_text, True, (255, 215, 0))
+                    self.screen.blit(badge_surf, (card_x + card_w // 2 - badge_surf.get_width() // 2, card_y + 252 + b_idx * 16))
+                    
+                # Draw newly unlocked achievements
+                unlocked = res.get("unlocked_achievements", [])
+                if unlocked:
+                    ach_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 11, bold=True)
+                    ach_y = card_y + 275
+                    for ach_name in unlocked:
+                        ach_surf = ach_font.render(f"🏆 UNLOCKED: {ach_name}!", True, (255, 165, 0))
+                        self.screen.blit(ach_surf, (card_x + card_w // 2 - ach_surf.get_width() // 2, ach_y))
+                        ach_y += 14
+                    
+            # --- TIMING OFFSET HEATMAP SCATTER PLOT ---
+            map_w = 720
+            map_h = 160
+            map_x = w // 2 - map_w // 2
+            map_y = h - 250
+            
+            # Backing box
+            pygame.draw.rect(self.screen, (15, 12, 22), (map_x, map_y, map_w, map_h), border_radius=8)
+            pygame.draw.rect(self.screen, (60, 55, 75), (map_x, map_y, map_w, map_h), width=1, border_radius=8)
+            
+            # Center guideline (Perfect 0ms)
+            pygame.draw.line(self.screen, (0, 255, 204, 100), (map_x + 40, map_y + map_h // 2), (map_x + map_w - 40, map_y + map_h // 2), 2)
+            
+            # Draw threshold lines (Perfect, Great)
+            py_perfect_top = map_y + map_h // 2 - int((TIMING_PERFECT / TIMING_GOOD) * (map_h // 2 - 20))
+            py_perfect_bottom = map_y + map_h // 2 + int((TIMING_PERFECT / TIMING_GOOD) * (map_h // 2 - 20))
+            py_great_top = map_y + map_h // 2 - int((TIMING_GREAT / TIMING_GOOD) * (map_h // 2 - 20))
+            py_great_bottom = map_y + map_h // 2 + int((TIMING_GREAT / TIMING_GOOD) * (map_h // 2 - 20))
+            
+            pygame.draw.line(self.screen, (0, 180, 150, 60), (map_x + 40, py_perfect_top), (map_x + map_w - 40, py_perfect_top), 1)
+            pygame.draw.line(self.screen, (0, 180, 150, 60), (map_x + 40, py_perfect_bottom), (map_x + map_w - 40, py_perfect_bottom), 1)
+            pygame.draw.line(self.screen, (180, 150, 0, 50), (map_x + 40, py_great_top), (map_x + map_w - 40, py_great_top), 1)
+            pygame.draw.line(self.screen, (180, 150, 0, 50), (map_x + 40, py_great_bottom), (map_x + map_w - 40, py_great_bottom), 1)
+            
+            # Vertical structural divisions of the song (every 25%)
+            for i in [0.25, 0.50, 0.75]:
+                vx = map_x + 40 + int(i * (map_w - 80))
+                pygame.draw.line(self.screen, (45, 42, 58), (vx, map_y + 15), (vx, map_y + map_h - 15), 1)
+            
+            # Text labels
+            map_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
+            lbl_title = map_font.render("SONG PERFORMANCE TIMING TIMELINE", True, (200, 200, 210))
+            lbl_early = map_font.render("-180ms (EARLY)", True, (220, 100, 100))
+            lbl_late = map_font.render("+180ms (LATE)", True, (100, 160, 220))
+            lbl_perf = map_font.render("0ms (PERFECT)", True, (0, 255, 204))
+            
+            self.screen.blit(lbl_title, (map_x + 12, map_y + 6))
+            self.screen.blit(lbl_early, (map_x + 12, map_y + map_h - 22))
+            self.screen.blit(lbl_late, (map_x + 12, map_y + 22))
+            self.screen.blit(lbl_perf, (map_x + map_w - lbl_perf.get_width() - 12, map_y + map_h // 2 - 7))
+            
+            # Plot hit offset points
+            for p_idx, res in enumerate(self.results_data):
+                p_accent = (0, 255, 204) if p_idx == 0 else (255, 64, 128) if p_idx == 1 else (180, 0, 255) if p_idx == 2 else (255, 215, 0)
+                offsets_list = res.get("timing_offsets", [])
+                song_dur = res.get("duration", 60.0)
+                
+                for idx, offset_item in enumerate(offsets_list):
+                    offset_val = offset_item["offset"]
+                    rating = offset_item["rating"]
+                    note_time = offset_item.get("time", 0.0)
+                    
+                    x_pct = note_time / song_dur if song_dur > 0 else 0.0
+                    x_pos = map_x + 40 + int(x_pct * (map_w - 80))
+                    x_pos = max(map_x + 40, min(map_x + map_w - 40, x_pos))
+                    
+                    y_pct = (offset_val - (-TIMING_GOOD)) / (2 * TIMING_GOOD)
+                    y_pos = map_y + map_h - 20 - int(y_pct * (map_h - 40))
+                    y_pos = max(map_y + 15, min(map_y + map_h - 15, y_pos))
+                    
+                    if rating == "PERFECT":
+                        dot_col = (0, 255, 204)
+                    elif rating == "GREAT":
+                        dot_col = (255, 215, 0)
+                    elif rating == "GOOD":
+                        dot_col = (200, 200, 50)
+                    else:
+                        dot_col = (255, 64, 64)
+                        
+                    rad = 4 if rating == "MISS" else 3
+                    pygame.draw.circle(self.screen, dot_col, (x_pos, y_pos), rad)
+                    if len(self.results_data) > 1:
+                        pygame.draw.circle(self.screen, p_accent, (x_pos, y_pos), rad, width=1)
+                    
+            # --- AI COACH PERFORMANCE ANALYSIS ---
+            coach_x = w // 2 - 360
+            coach_y = h - 110
+            coach_w = 720
+            coach_h = 35
+            
+            # Glassmorphic speech bubble
+            pygame.draw.rect(self.screen, (20, 18, 30) if self.is_dark_theme(theme) else (245, 245, 250), (coach_x, coach_y, coach_w, coach_h), border_radius=8)
+            pygame.draw.rect(self.screen, (244, 143, 177) if self.is_dark_theme(theme) else (180, 50, 90), (coach_x, coach_y, coach_w, coach_h), width=1, border_radius=8)
+            
+            # AI Coach text generation
+            # Let's read stats from Player 1 (first result)
+            perf1 = first_res["perfects"]
+            great1 = first_res["greats"]
+            miss1 = first_res["misses"]
+            total1 = perf1 + great1 + first_res.get("goods", 0) + miss1
+            acc1 = (perf1 * 100.0 + great1 * 75.0 + first_res.get("goods", 0) * 40.0) / max(1, total1)
+            
+            offsets1 = first_res.get("timing_offsets", [])
+            early_count = sum(1 for o in offsets1 if o["offset"] < -0.010)
+            late_count = sum(1 for o in offsets1 if o["offset"] > 0.010)
+            
+            if acc1 >= 98.0:
+                coach_msg = "Coach Mia: Purr-fect stepping! You have cat-like reflexes! Are you sure you're not an esports champion?"
+            elif acc1 >= 90.0:
+                coach_msg = "Coach Mia: Great job! Your timing is super clean. Keep up the rhythm and you'll get that All Perfect next time!"
+            elif miss1 == 0:
+                coach_msg = "Coach Mia: A clean sheet! No misses at all! That was incredibly steady, I'm proud of you!"
+            elif miss1 > 0 and miss1 <= 5:
+                coach_msg = "Coach Mia: So close! Just a couple of misses. Watch out for those fast streams near the end!"
+            elif early_count > late_count * 1.5:
+                coach_msg = "Coach Mia: You are stepping a bit early! Try listening closer to the beat, or adjust your audio latency offset in settings."
+            elif late_count > early_count * 1.5:
+                coach_msg = "Coach Mia: You are stepping slightly late! Try reading ahead on the highway to anticipate the notes."
+            else:
+                coach_msg = "Coach Mia: Don't give up! Try lowering the playback speed in practice mode to learn the tricky sections first!"
+                
+            coach_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 11, italic=True)
+            coach_surf = coach_font.render(coach_msg, True, (244, 143, 177) if self.is_dark_theme(theme) else (180, 50, 90))
+            self.screen.blit(coach_surf, (coach_x + coach_w // 2 - coach_surf.get_width() // 2, coach_y + coach_h // 2 - coach_surf.get_height() // 2))
+            
             play_hint = desc_font.render("Press ENTER to Continue", True, accent_color)
-            self.screen.blit(play_hint, (w // 2 - play_hint.get_width() // 2, h - 70))
+            self.screen.blit(play_hint, (w // 2 - play_hint.get_width() // 2, h - 55))
+
+        # --- DRAW STATE: PROFILE_CREATION ---
+        elif self.state == "PROFILE_CREATION":
+            theme_manager.draw_background_grid(self.screen, theme, time.time() * 0.5)
+            panel_w = 640
+            panel_h = 420
+            panel_x = w // 2 - panel_w // 2
+            panel_y = h // 2 - panel_h // 2 - 20
+            
+            bg_col = (15, 10, 25, 220) if self.is_dark_theme(theme) else (240, 240, 245, 220)
+            pygame.draw.rect(self.screen, bg_col, (panel_x, panel_y, panel_w, panel_h), border_radius=12)
+            pygame.draw.rect(self.screen, accent_color, (panel_x, panel_y, panel_w, panel_h), width=2, border_radius=12)
+            
+            title_surf = menu_font.render("DANCER PROFILE CREATION", True, text_color)
+            self.screen.blit(title_surf, (w // 2 - title_surf.get_width() // 2, panel_y + 30))
+            
+            desc_str = "Welcome! Create your local profile to track your scores, unlocks, and achievements."
+            desc_surf = small_font.render(desc_str, True, (160, 150, 175) if self.is_dark_theme(theme) else (90, 80, 100))
+            self.screen.blit(desc_surf, (w // 2 - desc_surf.get_width() // 2, panel_y + 80))
+            
+            lbl_name = desc_font.render("DISPLAY NAME:", True, accent_color)
+            self.screen.blit(lbl_name, (panel_x + 50, panel_y + 140))
+            
+            input_rect = pygame.Rect(panel_x + 50, panel_y + 175, panel_w - 100, 44)
+            box_col = (25, 18, 42) if self.is_dark_theme(theme) else (220, 220, 230)
+            pygame.draw.rect(self.screen, box_col, input_rect, border_radius=6)
+            pygame.draw.rect(self.screen, (0, 255, 204) if self.profile_creation_name else (80, 75, 95), input_rect, width=1, border_radius=6)
+            
+            cursor = "_" if (int(time.time() * 2) % 2 == 0) else ""
+            display_text = self.profile_creation_name + cursor
+            typed_surf = desc_font.render(display_text, True, text_color)
+            self.screen.blit(typed_surf, (input_rect.x + 15, input_rect.centery - typed_surf.get_height() // 2))
+            
+            lbl_av = desc_font.render("CHOOSE AVATAR (Press Tab / Click):", True, accent_color)
+            self.screen.blit(lbl_av, (panel_x + 50, panel_y + 245))
+            
+            av_start_x = w // 2 - 180
+            av_y = panel_y + 305
+            
+            for idx, av in enumerate(AVATARS):
+                ax = av_start_x + idx * 60
+                is_selected = (idx == self.profile_creation_avatar_idx)
+                
+                btn_color = (45, 35, 70) if is_selected else (25, 20, 40)
+                if not self.is_dark_theme(theme):
+                    btn_color = (195, 195, 215) if is_selected else (230, 230, 235)
+                
+                border_color = (0, 255, 204) if is_selected else ((60, 55, 75) if self.is_dark_theme(theme) else (200, 200, 205))
+                scale_av = 1.15 if is_selected else 1.0
+                
+                r_circ = int(22 * scale_av)
+                pygame.draw.circle(self.screen, btn_color, (ax, av_y), r_circ)
+                pygame.draw.circle(self.screen, border_color, (ax, av_y), r_circ, width=2 if is_selected else 1)
+                
+                av_font = pygame.font.SysFont("Segoe UI", int(20 * scale_av))
+                av_surf = av_font.render(av["char"], True, (255, 255, 255))
+                self.screen.blit(av_surf, (ax - av_surf.get_width() // 2, av_y - av_surf.get_height() // 2 - 1))
+            
+            confirm_rect = pygame.Rect(w // 2 - 100, panel_y + 350, 200, 42)
+            has_name = bool(self.profile_creation_name.strip())
+            
+            btn_col = (0, 200, 100) if has_name else (50, 50, 60)
+            text_col_btn = (255, 255, 255) if has_name else (120, 120, 130)
+            
+            pygame.draw.rect(self.screen, btn_col, confirm_rect, border_radius=6)
+            
+            btn_text = desc_font.render("CREATE PROFILE", True, text_col_btn)
+            self.screen.blit(btn_text, (confirm_rect.centerx - btn_text.get_width() // 2, confirm_rect.centery - btn_text.get_height() // 2))
+
+        # --- DRAW STATE: PROFILE_STATS ---
+        elif self.state == "PROFILE_STATS":
+            theme_manager.draw_background_grid(self.screen, theme, time.time() * 0.3)
+            
+            header_surf = menu_font.render("PLAYER DANCER PROFILE", True, text_color)
+            self.screen.blit(header_surf, (w // 2 - header_surf.get_width() // 2, 50))
+            
+            tab_names = ["stats", "scores", "achievements"]
+            tab_labels = ["STATS CARD", "TOP 10 SONGS", "ACHIEVEMENTS"]
+            tab_widths = [130, 150, 150]
+            tab_starts = [w // 2 - 210, w // 2 - 60, w // 2 + 110]
+            
+            for t_idx, (t_name, label, start_x, tw) in enumerate(zip(tab_names, tab_labels, tab_starts, tab_widths)):
+                is_active = (self.profile_tab == t_name)
+                t_rect = pygame.Rect(start_x, 110, tw, 36)
+                
+                t_color = accent_color if is_active else ((100, 90, 110) if self.is_dark_theme(theme) else (140, 140, 150))
+                lbl_s = small_font.render(label, True, t_color)
+                
+                self.screen.blit(lbl_s, (t_rect.centerx - lbl_s.get_width() // 2, t_rect.centery - lbl_s.get_height() // 2))
+                if is_active:
+                    pygame.draw.line(self.screen, accent_color, (start_x + 10, 145), (start_x + tw - 10, 145), 3)
+
+            card_w = 780
+            card_h = 440
+            card_x = w // 2 - card_w // 2
+            card_y = 160
+            
+            bg_panel_col = (20, 15, 30, 200) if self.is_dark_theme(theme) else (235, 235, 240, 200)
+            pygame.draw.rect(self.screen, bg_panel_col, (card_x, card_y, card_w, card_h), border_radius=12)
+            pygame.draw.rect(self.screen, (50, 45, 70) if self.is_dark_theme(theme) else (200, 200, 205), (card_x, card_y, card_w, card_h), width=1, border_radius=12)
+
+            if self.profile_tab == "stats":
+                avatar_char = profile_manager.get_avatar_char()
+                pygame.draw.circle(self.screen, (40, 30, 60) if self.is_dark_theme(theme) else (210, 210, 225), (card_x + 120, card_y + 110), 64)
+                pygame.draw.circle(self.screen, accent_color, (card_x + 120, card_y + 110), 64, width=3)
+                
+                av_draw_font = pygame.font.SysFont("Segoe UI", 60)
+                av_surf = av_draw_font.render(avatar_char, True, (255, 255, 255))
+                self.screen.blit(av_surf, (card_x + 120 - av_surf.get_width() // 2, card_y + 110 - av_surf.get_height() // 2 - 3))
+                
+                p_name = profile_manager.profile.get("player_name", "Janet")
+                p_tag = profile_manager.profile.get("tagline", "Beginner")
+                
+                name_surf = menu_font.render(p_name.upper(), True, text_color)
+                self.screen.blit(name_surf, (card_x + 220, card_y + 60))
+                
+                tag_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 16, bold=True, italic=True)
+                tag_surf = tag_font.render(f"Tagline: {p_tag}", True, (255, 215, 0))
+                self.screen.blit(tag_surf, (card_x + 220, card_y + 105))
+                
+                stats_data = profile_manager.profile.get("stats", {})
+                sec = stats_data.get("total_play_time_seconds", 0)
+                dur_str = f"{sec // 60}m {sec % 60}s"
+                
+                stat_items = [
+                    ("Songs Played:", str(stats_data.get("songs_played", 0))),
+                    ("Total Playtime:", dur_str),
+                    ("Highest Combo:", str(stats_data.get("highest_combo_ever", 0))),
+                    ("Avg Accuracy:", f"{stats_data.get('average_accuracy', 0.0):.2f}%"),
+                    ("Total Perfects:", str(stats_data.get("total_perfects", 0))),
+                    ("Total Misses:", str(stats_data.get("total_misses", 0)))
+                ]
+                
+                for idx, (lbl, val) in enumerate(stat_items):
+                    col_offset = card_x + 220 + (idx % 2) * 260
+                    row_offset = card_y + 145 + (idx // 2) * 32
+                    
+                    lbl_s = desc_font.render(lbl, True, (170, 160, 185) if self.is_dark_theme(theme) else (90, 80, 100))
+                    val_s = desc_font.render(val, True, text_color)
+                    self.screen.blit(lbl_s, (col_offset, row_offset))
+                    self.screen.blit(val_s, (col_offset + 140, row_offset))
+                
+                pygame.draw.line(self.screen, (60, 55, 75), (card_x + 30, card_y + 265), (card_x + card_w - 30, card_y + 265), 1)
+                
+                unlocked_tags_lbl = desc_font.render("SELECT ACTIVE TAGLINE (Click Tagline):", True, accent_color)
+                self.screen.blit(unlocked_tags_lbl, (card_x + 40, card_y + 280))
+                
+                unlocked_tags = profile_manager.profile.get("unlocked_taglines", ["Beginner"])
+                for idx, tag in enumerate(unlocked_tags):
+                    row_y = card_y + 315 + idx * 30
+                    is_active_tag = (p_tag == tag)
+                    
+                    bg_tag = (40, 30, 60) if is_active_tag else (25, 20, 40)
+                    if not self.is_dark_theme(theme):
+                        bg_tag = (210, 210, 225) if is_active_tag else (235, 235, 240)
+                        
+                    bd_tag = (255, 215, 0) if is_active_tag else ((60, 55, 75) if self.is_dark_theme(theme) else (200, 200, 205))
+                    tag_rect = pygame.Rect(card_x + 40, row_y, card_w - 80, 26)
+                    
+                    pygame.draw.rect(self.screen, bg_tag, tag_rect, border_radius=4)
+                    pygame.draw.rect(self.screen, bd_tag, tag_rect, width=1, border_radius=4)
+                    
+                    tag_color = (255, 215, 0) if is_active_tag else text_color
+                    tag_s = small_font.render(f"★  {tag}  ★" if is_active_tag else tag, True, tag_color)
+                    self.screen.blit(tag_s, (tag_rect.centerx - tag_s.get_width() // 2, tag_rect.centery - tag_s.get_height() // 2))
+
+            elif self.profile_tab == "scores":
+                top_scores = profile_manager.get_top_10_scores()
+                if not top_scores:
+                    no_scores_surf = desc_font.render("NO RECORDS FOUND YET. GO PLAY SOME SONGS!", True, (130, 120, 140))
+                    self.screen.blit(no_scores_surf, (w // 2 - no_scores_surf.get_width() // 2, card_y + card_h // 2 - 10))
+                else:
+                    hdr_y = card_y + 15
+                    pygame.draw.line(self.screen, (60, 55, 75), (card_x + 20, hdr_y + 22), (card_x + card_w - 20, hdr_y + 22), 1)
+                    
+                    self.screen.blit(small_font.render("SONG TITLE", True, accent_color), (card_x + 30, hdr_y))
+                    self.screen.blit(small_font.render("DIFF", True, accent_color), (card_x + 270, hdr_y))
+                    self.screen.blit(small_font.render("GRADE", True, accent_color), (card_x + 370, hdr_y))
+                    self.screen.blit(small_font.render("BEST SCORE", True, accent_color), (card_x + 470, hdr_y))
+                    self.screen.blit(small_font.render("ACC", True, accent_color), (card_x + 600, hdr_y))
+                    self.screen.blit(small_font.render("FC?", True, accent_color), (card_x + 690, hdr_y))
+                    
+                    for idx, record in enumerate(top_scores):
+                        row_y = card_y + 48 + idx * 36
+                        bg_r = (25, 20, 42) if (idx % 2 == 0) else (18, 14, 30)
+                        if not self.is_dark_theme(theme):
+                            bg_r = (240, 240, 245) if (idx % 2 == 0) else (230, 230, 235)
+                        pygame.draw.rect(self.screen, bg_r, (card_x + 20, row_y - 4, card_w - 40, 32), border_radius=4)
+                        
+                        title_lbl = render_truncated_text(small_font, record.get("title", ""), 220, text_color)
+                        self.screen.blit(title_lbl, (card_x + 30, row_y))
+                        
+                        diff_lbl = small_font.render(record.get("difficulty", "Medium"), True, (255, 128, 0))
+                        self.screen.blit(diff_lbl, (card_x + 270, row_y))
+                        
+                        grade_lbl = small_font.render(record.get("grade", "F"), True, (0, 255, 100) if "S" in record.get("grade", "") else text_color)
+                        self.screen.blit(grade_lbl, (card_x + 370, row_y))
+                        
+                        score_lbl = small_font.render(f"{record.get('best_score', 0):,}", True, text_color)
+                        self.screen.blit(score_lbl, (card_x + 470, row_y))
+                        
+                        acc_lbl = small_font.render(f"{record.get('best_accuracy', 0.0):.2f}%", True, text_color)
+                        self.screen.blit(acc_lbl, (card_x + 600, row_y))
+                        
+                        fc_lbl = small_font.render("🐾 FC" if record.get("full_combo", False) else "No", True, (255, 215, 0) if record.get("full_combo", False) else (140, 130, 150))
+                        self.screen.blit(fc_lbl, (card_x + 690, row_y))
+
+            elif self.profile_tab == "achievements":
+                unlocked_set = set(profile_manager.profile.get("achievements", []))
+                ach_list = list(ACHIEVEMENTS.keys())
+                visible_count = 4
+                scroll_offset = min(self.profile_scroll_idx, max(0, len(ach_list) - visible_count))
+                self.profile_scroll_idx = scroll_offset
+                
+                for idx in range(visible_count):
+                    ach_idx = scroll_offset + idx
+                    if ach_idx >= len(ach_list):
+                        break
+                    ach_id = ach_list[ach_idx]
+                    info = ACHIEVEMENTS[ach_id]
+                    is_unlocked = (ach_id in unlocked_set)
+                    
+                    row_y = card_y + 20 + idx * 95
+                    row_bg = (30, 22, 50) if is_unlocked else (18, 14, 25)
+                    if not self.is_dark_theme(theme):
+                        row_bg = (220, 240, 230) if is_unlocked else (240, 240, 245)
+                        
+                    row_bd = (255, 215, 0) if is_unlocked else ((60, 55, 75) if self.is_dark_theme(theme) else (200, 200, 205))
+                    pygame.draw.rect(self.screen, row_bg, (card_x + 30, row_y, card_w - 60, 85), border_radius=8)
+                    pygame.draw.rect(self.screen, row_bd, (card_x + 30, row_y, card_w - 60, 85), width=2 if is_unlocked else 1, border_radius=8)
+                    
+                    trophy_font = pygame.font.SysFont("Segoe UI", 36)
+                    trophy_color = (255, 215, 0) if is_unlocked else (100, 100, 110)
+                    trophy_surf = trophy_font.render("🏆" if is_unlocked else "🔒", True, trophy_color)
+                    self.screen.blit(trophy_surf, (card_x + 50, row_y + 15))
+                    
+                    title_surf = desc_font.render(info["name"].upper(), True, (255, 215, 0) if is_unlocked else (130, 120, 140))
+                    desc_surf = small_font.render(info["description"], True, (220, 220, 230) if is_unlocked else (130, 120, 140))
+                    
+                    self.screen.blit(title_surf, (card_x + 120, row_y + 12))
+                    self.screen.blit(desc_surf, (card_x + 120, row_y + 40))
+                    
+                    rewards = []
+                    if info["unlock_tagline"]:
+                        rewards.append(f"Tagline: {info['unlock_tagline']}")
+                    if info["unlock_theme"]:
+                        rewards.append(f"Theme: {info['unlock_theme']}")
+                    if rewards:
+                        rew_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
+                        rew_surf = rew_font.render("REWARD: " + " & ".join(rewards), True, (0, 255, 204) if is_unlocked else (130, 120, 140))
+                        self.screen.blit(rew_surf, (card_x + 120, row_y + 60))
+
+                if len(ach_list) > visible_count:
+                    ind_s = small_font.render("▲ UP/DOWN ARROWS OR MOUSE WHEEL TO SCROLL LIST ▲", True, accent_color)
+                    self.screen.blit(ind_s, (w // 2 - ind_s.get_width() // 2, card_y + card_h - 25))
+
+            back_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 16, bold=True)
+            back_surf = back_font.render("◄  BACK  ►", True, accent_color)
+            pygame.draw.rect(self.screen, (25, 20, 40) if self.is_dark_theme(theme) else (225, 225, 230), (50, h - 60, 100, 36), border_radius=6)
+            pygame.draw.rect(self.screen, accent_color, (50, h - 60, 100, 36), width=1, border_radius=6)
+            self.screen.blit(back_surf, (50 + 50 - back_surf.get_width() // 2, h - 60 + 18 - back_surf.get_height() // 2))
 
         # --- DRAW STATE: ERROR_SCREEN ---
         elif self.state == "ERROR_SCREEN" and hasattr(self, "error_traceback"):
@@ -2381,6 +4471,42 @@ class App:
             
             hint_surf = desc_font.render("Press ESC to return to Title Menu", True, (0, 255, 204))
             self.screen.blit(hint_surf, (w // 2 - hint_surf.get_width() // 2, h - 80))
+
+        # --- DRAW CELEBRATION EFFECTS OVERLAY ---
+        if self.celebration.active:
+            self.celebration.draw(self.screen)
+
+        # Draw Achievement Unlock Banner Notification
+        if getattr(self, "achievement_banner_timer", 0) > 0 and getattr(self, "newly_unlocked_achievements", None):
+            banner_w = 480
+            banner_h = 80
+            banner_x = w // 2 - banner_w // 2
+            # Slide in from the top
+            banner_y = max(20, int(20 - (6.0 - self.achievement_banner_timer) * 100))
+            if self.achievement_banner_timer < 1.0:
+                banner_y = int(20 - (1.0 - self.achievement_banner_timer) * 120)
+
+            # Draw glossy glass banner card
+            pygame.draw.rect(self.screen, (30, 20, 50, 230), (banner_x, banner_y, banner_w, banner_h), border_radius=12)
+            pygame.draw.rect(self.screen, (255, 215, 0), (banner_x, banner_y, banner_w, banner_h), width=2, border_radius=12)
+            
+            # Icon
+            trophy_font = pygame.font.SysFont("Segoe UI", 36)
+            trophy_surf = trophy_font.render("🏆", True, (255, 255, 255))
+            self.screen.blit(trophy_surf, (banner_x + 20, banner_y + banner_h // 2 - trophy_surf.get_height() // 2))
+
+            # Text
+            ach_id = self.newly_unlocked_achievements[0]
+            ach_info = ACHIEVEMENTS.get(ach_id, {"name": "Achievement Unlocked!", "description": ""})
+            
+            hdr_font = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 18, bold=True)
+            desc_font_banner = pygame.font.SysFont("Trebuchet MS" if theme == "DDR-Retro" else "Segoe UI", 14)
+            
+            title_s = hdr_font.render(f"ACHIEVEMENT UNLOCKED: {ach_info['name'].upper()}!", True, (255, 215, 0))
+            desc_s = desc_font_banner.render(ach_info["description"], True, (220, 220, 230))
+            
+            self.screen.blit(title_s, (banner_x + 80, banner_y + 16))
+            self.screen.blit(desc_s, (banner_x + 80, banner_y + 44))
 
         pygame.display.flip()
 

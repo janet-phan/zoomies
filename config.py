@@ -23,11 +23,11 @@ SCREEN_WIDTH = 1024
 SCREEN_HEIGHT = 768
 FPS = 120  # High frame rate for responsive gameplay
 
-# Timing Windows (in seconds)
-TIMING_PERFECT = 0.022   # +/- 22ms
-TIMING_GREAT = 0.045     # +/- 45ms
-TIMING_GOOD = 0.090      # +/- 90ms
-TIMING_OK = 0.135        # +/- 135ms
+# Timing Windows (in seconds) - StepMania Judge 4 alignment
+TIMING_PERFECT = 0.043   # +/- 43ms (matches StepMania Excellent)
+TIMING_GREAT = 0.090     # +/- 90ms (matches StepMania Great)
+TIMING_GOOD = 0.135      # +/- 135ms (matches StepMania Decent)
+TIMING_OK = 0.180        # +/- 180ms (matches StepMania Way Off)
 
 # Score Values
 SCORE_PERFECT = 1000
@@ -38,6 +38,11 @@ SCORE_MISS = 0
 # Default Configurations
 DEFAULT_SETTINGS = {
     "theme": "DDR-Retro",
+    "audio_offset": 0.0,
+    "assist_tick": False,
+    "proportional_scoring": False,
+    "miss_penalty": 0,
+    "playback_speed": 1.0,
     "character": "Miku",
     "character_p2": "Beat Bot",
     "character_p3": "Beat Bot",
@@ -373,6 +378,48 @@ class Settings:
         self.data["players"] = int(val)
         self.save()
 
+    @property
+    def audio_offset(self):
+        return self.data.get("audio_offset", 0.0)
 
+    @audio_offset.setter
+    def audio_offset(self, val):
+        self.data["audio_offset"] = float(val)
+        self.save()
+    @property
+    def assist_tick(self):
+        return self.data.get("assist_tick", False)
+
+    @assist_tick.setter
+    def assist_tick(self, val):
+        self.data["assist_tick"] = bool(val)
+        self.save()
+
+    @property
+    def proportional_scoring(self):
+        return self.data.get("proportional_scoring", False)
+
+    @proportional_scoring.setter
+    def proportional_scoring(self, val):
+        self.data["proportional_scoring"] = bool(val)
+        self.save()
+
+    @property
+    def miss_penalty(self):
+        return self.data.get("miss_penalty", 0)
+
+    @miss_penalty.setter
+    def miss_penalty(self, val):
+        self.data["miss_penalty"] = int(val)
+        self.save()
+
+    @property
+    def playback_speed(self):
+        return self.data.get("playback_speed", 1.0)
+
+    @playback_speed.setter
+    def playback_speed(self, val):
+        self.data["playback_speed"] = float(val)
+        self.save()
 
 settings = Settings()

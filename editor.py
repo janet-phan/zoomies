@@ -42,7 +42,7 @@ class ChartEditor:
         self.lane_width = 70
         self.lane_spacing = 15
         self.total_width = (self.lane_width * 4) + (self.lane_spacing * 3)
-        self.start_x = 100  # Shifted left to make room for sidebar controls
+        self.start_x = 350  # Centered for three-column layout
         self.receptor_y = 550  # Receptor bar is near bottom of editor
         self.scroll_speed = 300  # Pixels per second
         
@@ -75,6 +75,10 @@ class ChartEditor:
         # Live recording state
         self.recording = False
         self.active_record_notes = {}
+        
+        # Inline textbox editing state
+        self.active_textbox = None
+        self.textbox_buffer = ""
 
     def load_music(self):
         try:
@@ -307,6 +311,32 @@ class ChartEditor:
         except Exception as e:
             print(f"Error saving chart: {e}")
 
+    def confirm_and_save(self):
+        """Asks whether to overwrite the current difficulty or rename it to save as a new custom chart."""
+        import tkinter as tk
+        from tkinter import messagebox, simpledialog
+        
+        root = tk.Tk()
+        root.withdraw()
+        
+        title = "Overwrite Chart?"
+        msg = f"You are about to overwrite the existing '{self.difficulty}' chart for this song.\n\nDo you want to overwrite it?\n(Select 'No' to rename and save as a custom difficulty instead)"
+        
+        resp = messagebox.askyesnocancel(title, msg, default=messagebox.YES)
+        if resp is True:
+            self.save_chart()
+        elif resp is False:
+            new_diff = simpledialog.askstring("Rename Difficulty", "Enter new custom difficulty name:", initialvalue=self.difficulty + " Custom")
+            if new_diff:
+                new_diff = new_diff.strip()
+                if new_diff:
+                    charts = self.metadata.get("charts", {})
+                    charts[new_diff] = self.chart
+                    self.difficulty = new_diff
+                    self.save_chart()
+                    self.save_notification_timer = 3.0
+                    print(f"Chart saved as new custom difficulty: {new_diff}")
+
     def save_new_version(self):
         """Duplicates current chart under a new sequential Custom difficulty index."""
         charts = self.metadata.get("charts", {})
@@ -324,6 +354,94 @@ class ChartEditor:
         self.save_chart()
         self.save_notification_timer = 2.0
         print(f"Chart saved as new version: {new_key}")
+
+    def save_as(self):
+        """Saves a copy of the current song and all its charts under a new title and filename."""
+        import tkinter as tk
+        from tkinter import simpledialog
+        import shutil
+        
+        root = tk.Tk()
+        root.withdraw()
+        
+        new_title = simpledialog.askstring("Save As New Song", "Enter new Song Title:", initialvalue=self.metadata.get("title", "") + " (Copy)")
+        if not new_title:
+            return
+            
+        new_title = new_title.strip()
+        if not new_title:
+            return
+            
+        # Clean title to create a safe filename
+        safe_name = "".join([c if c.isalnum() or c in " _-" else "" for c in new_title]).strip().replace(" ", "_")
+        if not safe_name:
+            safe_name = "copy_song"
+            
+        rel_dir = os.path.dirname(self.song_filename)
+        ext = self.song_filename.rsplit(".", 1)[-1]
+        
+        new_rel_audio = os.path.join(rel_dir, f"{safe_name}.{ext}").replace("\\", "/")
+        new_wav_path = os.path.join(settings.SONGS_DIR, new_rel_audio)
+        new_json_path = os.path.join(settings.SONGS_DIR, os.path.join(rel_dir, f"{safe_name}.json")).replace("\\", "/")
+        
+        counter = 1
+        while os.path.exists(new_wav_path) or os.path.exists(new_json_path):
+            counter += 1
+            new_rel_audio = os.path.join(rel_dir, f"{safe_name}_{counter}.{ext}").replace("\\", "/")
+            new_wav_path = os.path.join(settings.SONGS_DIR, new_rel_audio)
+            new_json_path = os.path.join(settings.SONGS_DIR, os.path.join(rel_dir, f"{safe_name}_{counter}.json")).replace("\\", "/")
+            
+        try:
+            shutil.copy2(self.song_wav_path, new_wav_path)
+            
+            import copy
+            new_meta = copy.deepcopy(self.metadata)
+            new_meta["title"] = new_title
+            new_meta["filename"] = new_rel_audio
+            
+            with open(new_json_path, "w") as f:
+                json.dump(new_meta, f, indent=4)
+                
+            self.save_notification_timer = 3.0
+            sound_helper.play_select()
+            print(f"Song saved as copy: {new_title} at {new_json_path}")
+            
+        except Exception as e:
+            print(f"Error in Save As: {e}")
+
+    def get_chart_stats(self):
+        stats = {
+            "taps": 0,
+            "jumps": 0,
+            "hands": 0,
+            "holds": 0,
+            "mines": 0,
+            "rolls": 0,
+            "lifts": 0,
+            "fakes": 0
+        }
+        for note in self.chart:
+            n_type = note.get("type", "single")
+            lanes_count = len(note.get("lanes", []))
+            
+            if n_type == "mine":
+                stats["mines"] += 1
+            elif n_type == "roll":
+                stats["rolls"] += 1
+            elif n_type == "lift":
+                stats["lifts"] += 1
+            elif n_type == "fake":
+                stats["fakes"] += 1
+            elif n_type == "hold":
+                stats["holds"] += 1
+            else:
+                if lanes_count == 1:
+                    stats["taps"] += 1
+                elif lanes_count == 2:
+                    stats["jumps"] += 1
+                elif lanes_count >= 3:
+                    stats["hands"] += 1
+        return stats
 
     def copy_selection(self):
         if self.selection_start is None or self.selection_end is None:
@@ -478,6 +596,21 @@ class ChartEditor:
             self.save_notification_timer = max(0.0, self.save_notification_timer - dt)
 
     def handle_mouse_click(self, mx, my):
+        col2_x = SCREEN_WIDTH - 280
+        
+        # Commit active textbox if clicked elsewhere
+        if getattr(self, "active_textbox", None) is not None:
+            clicked_inside = False
+            if col2_x <= mx <= col2_x + 250:
+                if self.active_textbox == "title" and 70 <= my <= 102:
+                    clicked_inside = True
+                elif self.active_textbox == "bpm" and 110 <= my <= 142:
+                    clicked_inside = True
+                elif self.active_textbox == "difficulty" and 150 <= my <= 182:
+                    clicked_inside = True
+            if not clicked_inside:
+                self.commit_textbox()
+
         # 0. Check click on any hold note's end cap to drag
         for note in self.chart:
             if note.get("type") == "hold" and "endtime" in note:
@@ -493,10 +626,6 @@ class ChartEditor:
                         return
 
         # 1. Check click in lanes area (to place notes)
-        # Y coordinate relative to receptor:
-        # y_offset = (note_time - editor_time) * scroll_speed
-        # note_y = receptor_y - y_offset
-        # So: target_time = editor_time + (receptor_y - my) / scroll_speed
         if self.start_x <= mx <= self.start_x + self.total_width:
             # Determine which lane was clicked
             clicked_lane = -1
@@ -513,50 +642,254 @@ class ChartEditor:
                     self.toggle_note(clicked_lane, target_time)
                     return
 
-        # 2. Check sidebar controls clicks
-        sidebar_x = 520
-        # Snap change button (next to Grid Snap label)
-        if (sidebar_x + 140 <= mx <= sidebar_x + 260) and (275 <= my <= 305):
-            self.snap_index = (self.snap_index + 1) % len(self.grid_snaps)
-        # Play/Pause button
-        elif (sidebar_x <= mx <= sidebar_x + 140) and (330 <= my <= 370):
-            self.toggle_play()
-        # Save button
-        elif (sidebar_x + 160 <= mx <= sidebar_x + 225) and (330 <= my <= 370):
-            self.save_chart()
-        # Save New Version button
-        elif (sidebar_x + 235 <= mx <= sidebar_x + 300) and (330 <= my <= 370):
-            self.save_new_version()
-        # Clear all notes button
-        elif (sidebar_x <= mx <= sidebar_x + 300) and (435 <= my <= 470):
-            self.push_undo()
-            self.chart.clear()
-            self.unsaved_changes = True
-        # Undo button
-        elif (sidebar_x <= mx <= sidebar_x + 140) and (385 <= my <= 420):
-            self.undo()
-        # Redo button
-        elif (sidebar_x + 160 <= mx <= sidebar_x + 300) and (385 <= my <= 420):
-            self.redo()
-        # Record button
-        elif (sidebar_x <= mx <= sidebar_x + 300) and (485 <= my <= 520):
-            self.toggle_record()
-        # Playback speed buttons click check (Y=535)
-        elif (sidebar_x + 130 <= mx <= sidebar_x + 298) and (535 <= my <= 561):
-            s_idx = int((mx - (sidebar_x + 130)) // 28)
-            speeds = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
-            if 0 <= s_idx < len(speeds):
-                new_speed = speeds[s_idx]
-                if self.playback_speed != new_speed:
-                    was_playing = self.playing
-                    if was_playing:
-                        self.toggle_play()
-                    self.playback_speed = new_speed
-                    if was_playing:
-                        self.toggle_play()
-                    print(f"Playback speed changed to {self.playback_speed}x")
+        # 2. Check sidebar controls clicks (X-range is col2_x to col2_x + 250)
+        if col2_x <= mx <= col2_x + 250:
+            # 2.1 Metadata boxes
+            # Song Title Box: Rect(col2_x, 70, 250, 32)
+            if 70 <= my <= 102:
+                self.active_textbox = "title"
+                self.textbox_buffer = self.metadata.get("title", "")
+                sound_helper.play_select()
+                return
+            # BPM Box: Rect(col2_x, 110, 250, 32)
+            elif 110 <= my <= 142:
+                self.active_textbox = "bpm"
+                self.textbox_buffer = f"{self.bpm:.2f}"
+                sound_helper.play_select()
+                return
+            # Difficulty Box: Rect(col2_x, 150, 250, 32)
+            elif 150 <= my <= 182:
+                self.active_textbox = "difficulty"
+                self.textbox_buffer = self.difficulty
+                sound_helper.play_select()
+                return
+            # Save As New Song Button: Rect(col2_x, 190, 250, 32)
+            elif 190 <= my <= 222:
+                self.save_as()
+                return
+            
+            # 2.2 Editor actions
+            y_sec4 = 530
+            btn_play = pygame.Rect(col2_x, y_sec4 + 30, 120, 30)
+            btn_save = pygame.Rect(col2_x + 130, y_sec4 + 30, 120, 30)
+            btn_undo = pygame.Rect(col2_x, y_sec4 + 70, 120, 30)
+            btn_redo = pygame.Rect(col2_x + 130, y_sec4 + 70, 120, 30)
+            btn_clear = pygame.Rect(col2_x, y_sec4 + 110, 250, 30)
+            btn_filler = pygame.Rect(col2_x, y_sec4 + 150, 250, 30)
+            btn_export = pygame.Rect(col2_x, y_sec4 + 190, 250, 30)
+            
+            if btn_play.collidepoint(mx, my):
+                self.toggle_play()
+                return
+            elif btn_save.collidepoint(mx, my):
+                self.confirm_and_save()
+                return
+            elif btn_undo.collidepoint(mx, my):
+                self.undo()
+                return
+            elif btn_redo.collidepoint(mx, my):
+                self.redo()
+                return
+            elif btn_clear.collidepoint(mx, my):
+                self.push_undo()
+                self.chart.clear()
+                self.unsaved_changes = True
+                sound_helper.play_select()
+                return
+            elif btn_filler.collidepoint(mx, my):
+                self.generate_filler_beats()
+                return
+            elif btn_export.collidepoint(mx, my):
+                self.export_to_sm()
+                return
 
-    def handle_key_down(self, key):
+    def commit_textbox(self):
+        if not self.active_textbox:
+            return
+            
+        val = self.textbox_buffer.strip()
+        if self.active_textbox == "title":
+            if val:
+                self.metadata["title"] = val
+                self.unsaved_changes = True
+                sound_helper.play_select()
+        elif self.active_textbox == "bpm":
+            try:
+                new_bpm = float(val)
+                if new_bpm > 10.0:
+                    self.bpm = new_bpm
+                    self.metadata["bpm"] = new_bpm
+                    self.beat_interval = 60.0 / self.bpm
+                    self.unsaved_changes = True
+                    sound_helper.play_select()
+            except ValueError:
+                pass
+        elif self.active_textbox == "difficulty":
+            if val and val != self.difficulty:
+                charts = self.metadata.get("charts", {})
+                charts[val] = charts.pop(self.difficulty, self.chart)
+                self.difficulty = val
+                self.unsaved_changes = True
+                sound_helper.play_select()
+                
+        self.active_textbox = None
+
+    def generate_filler_beats(self):
+        self.push_undo()
+        
+        # Sort current chart by time
+        self.chart.sort(key=lambda n: n["time"])
+        
+        # Determine step subdivision based on difficulty
+        diff_lower = self.difficulty.lower()
+        if "easy" in diff_lower:
+            step_div = 1  # 4th notes
+        elif "medium" in diff_lower:
+            step_div = 2  # 8th notes
+        else:
+            step_div = 4  # 16th notes
+            
+        step_duration = self.beat_interval / step_div
+        
+        # Identify gaps and inject
+        injected_count = 0
+        gaps = []
+        
+        # First gap from start of song
+        if len(self.chart) > 0:
+            if self.chart[0]["time"] > 2.0:
+                gaps.append((0.5, self.chart[0]["time"] - 0.5))
+        else:
+            gaps.append((0.5, self.song_duration - 0.5))
+            
+        # Middle gaps
+        for idx in range(len(self.chart) - 1):
+            n1 = self.chart[idx]
+            n2 = self.chart[idx + 1]
+            t1 = n1.get("endtime", n1["time"])
+            t2 = n2["time"]
+            if t2 - t1 > 2.0:
+                gaps.append((t1 + 0.5, t2 - 0.5))
+                
+        # Final gap
+        if len(self.chart) > 0:
+            last_t = self.chart[-1].get("endtime", self.chart[-1]["time"])
+            if self.song_duration - last_t > 2.0:
+                gaps.append((last_t + 0.5, self.song_duration - 0.5))
+                
+        # Inject notes into gaps
+        lane_cycle = 0
+        for g_start, g_end in gaps:
+            # Align start time to step grid
+            start_aligned = math.ceil(g_start / step_duration) * step_duration
+            t = start_aligned
+            while t <= g_end:
+                too_close = any(abs(n["time"] - t) < 0.010 for n in self.chart)
+                if not too_close:
+                    lane = lane_cycle % 4
+                    self.chart.append({
+                        "time": float(round(t, 3)),
+                        "lanes": [lane],
+                        "type": "tap"
+                    })
+                    injected_count += 1
+                    lane_cycle += 1
+                t += step_duration
+                
+        if injected_count > 0:
+            self.chart.sort(key=lambda n: n["time"])
+            self.unsaved_changes = True
+            sound_helper.play_hit()
+            print(f"Injected {injected_count} filler beats into chart!")
+        else:
+            print("No gaps found to fill!")
+
+    def export_to_sm(self):
+        sm_path = self.output_json_path.rsplit(".", 1)[0] + ".sm"
+        self.chart.sort(key=lambda n: n["time"])
+        
+        # Basic SM Header
+        lines = [
+            f"#TITLE:{self.metadata.get('title', 'Unknown')};",
+            f"#ARTIST:{self.metadata.get('artist', 'Unknown')};",
+            f"#MUSIC:{self.song_filename};",
+            f"#OFFSET:0.000;",
+            f"#BPMS:0.000={self.bpm:.3f};",
+            f"#NOTES:",
+            f"     dance-single:",
+            f"     :",
+            f"     {self.difficulty}:",
+            f"     1:",
+            f"     0.000:",
+        ]
+        
+        # Calculate maximum measure
+        if len(self.chart) > 0:
+            last_t = self.chart[-1].get("endtime", self.chart[-1]["time"])
+            max_beat = last_t * (self.bpm / 60.0)
+            max_measure = math.ceil(max_beat / 4.0)
+        else:
+            max_measure = 1
+            
+        measure_rows = 16
+        total_rows = max_measure * measure_rows
+        note_grid = [["0", "0", "0", "0"] for _ in range(total_rows)]
+        
+        for note in self.chart:
+            beat = note["time"] * (self.bpm / 60.0)
+            row_idx = round(beat * 4.0)
+            if 0 <= row_idx < total_rows:
+                n_type = "1"
+                if note.get("type") == "mine":
+                    n_type = "M"
+                elif note.get("type") == "hold":
+                    n_type = "2"
+                    
+                for lane in note["lanes"]:
+                    note_grid[row_idx][lane] = n_type
+                    
+                if note.get("type") == "hold" and "endtime" in note:
+                    end_beat = note["endtime"] * (self.bpm / 60.0)
+                    end_row = round(end_beat * 4.0)
+                    if 0 <= end_row < total_rows:
+                        for lane in note["lanes"]:
+                            note_grid[end_row][lane] = "3"
+                            
+        for m in range(max_measure):
+            for r in range(measure_rows):
+                row_str = "".join(note_grid[m * measure_rows + r])
+                lines.append(row_str)
+            if m < max_measure - 1:
+                lines.append(",")
+            else:
+                lines.append(";")
+                
+        try:
+            with open(sm_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            print(f"Exported SM file to {sm_path}!")
+            self.save_notification_timer = 3.0
+            sound_helper.play_hit()
+        except Exception as e:
+            print(f"Error exporting SM: {e}")
+
+    def handle_key_down(self, event):
+        key = event.key
+        
+        # Intercept typing if a textbox is active
+        if getattr(self, "active_textbox", None) is not None:
+            if key == pygame.K_RETURN:
+                self.commit_textbox()
+            elif key == pygame.K_ESCAPE:
+                self.active_textbox = None
+            elif key == pygame.K_BACKSPACE:
+                self.textbox_buffer = self.textbox_buffer[:-1]
+            else:
+                char = event.unicode
+                if char and (char.isprintable() or char in " .-_"):
+                    self.textbox_buffer += char
+            return
+
         # Toggle record mode with R key
         if key == pygame.K_r:
             self.toggle_record()
@@ -649,7 +982,7 @@ class ChartEditor:
 
         # 3. Standard Navigation
         if key == pygame.K_s:
-            self.save_chart()
+            self.confirm_and_save()
         elif key == pygame.K_UP:
             # Scroll forward by 1 grid step
             step = self.get_snap_duration()
@@ -669,8 +1002,8 @@ class ChartEditor:
             # Increase grid snap
             self.snap_index = (self.snap_index + 1) % len(self.grid_snaps)
         
-        # Toggle hold note state on hovered note with H key
-        if key == pygame.K_h:
+        # Toggling other note types: H (Hold), M (Mine), O (Roll), L (Lift), F (Fake)
+        if key in [pygame.K_h, pygame.K_m, pygame.K_o, pygame.K_l, pygame.K_f]:
             mx, my = pygame.mouse.get_pos()
             if self.start_x <= mx <= self.start_x + self.total_width:
                 hovered_lane = -1
@@ -695,21 +1028,50 @@ class ChartEditor:
                                 
                     if closest_note:
                         self.push_undo()
-                        if closest_note.get("type") == "hold":
-                            closest_note["type"] = "single"
-                            if "endtime" in closest_note:
-                                del closest_note["endtime"]
-                            print("Toggled hold note back to tap note.")
-                        else:
-                            end_t = self.snap_time(self.editor_time)
-                            if end_t > closest_note["time"]:
-                                closest_note["type"] = "hold"
-                                closest_note["endtime"] = end_t
-                                print(f"Created hold note from {closest_note['time']}s to {end_t}s")
+                        prev_type = closest_note.get("type", "single")
+                        
+                        if key == pygame.K_h:
+                            if prev_type == "hold":
+                                closest_note["type"] = "single"
+                                if "endtime" in closest_note:
+                                    del closest_note["endtime"]
+                                print("Toggled hold note back to tap note.")
                             else:
                                 closest_note["type"] = "hold"
-                                closest_note["endtime"] = closest_note["time"] + self.get_snap_duration() * 2
-                                print("Created default hold note.")
+                                if "endtime" not in closest_note:
+                                    closest_note["endtime"] = closest_note["time"] + self.get_snap_duration() * 2
+                                print("Toggled note to hold.")
+                        
+                        elif key == pygame.K_o:
+                            if prev_type == "roll":
+                                closest_note["type"] = "single"
+                                if "endtime" in closest_note:
+                                    del closest_note["endtime"]
+                                print("Toggled roll note back to tap note.")
+                            else:
+                                closest_note["type"] = "roll"
+                                if "endtime" not in closest_note:
+                                    closest_note["endtime"] = closest_note["time"] + self.get_snap_duration() * 2
+                                print("Toggled note to roll.")
+                        
+                        elif key == pygame.K_m:
+                            closest_note["type"] = "single" if prev_type == "mine" else "mine"
+                            if "endtime" in closest_note:
+                                del closest_note["endtime"]
+                            print("Toggled note mine state.")
+                                
+                        elif key == pygame.K_l:
+                            closest_note["type"] = "single" if prev_type == "lift" else "lift"
+                            if "endtime" in closest_note:
+                                del closest_note["endtime"]
+                            print("Toggled note lift state.")
+                                
+                        elif key == pygame.K_f:
+                            closest_note["type"] = "single" if prev_type == "fake" else "fake"
+                            if "endtime" in closest_note:
+                                del closest_note["endtime"]
+                            print("Toggled note fake state.")
+                                
                         self.unsaved_changes = True
                         try:
                             sound_helper.play_hit()
@@ -799,13 +1161,13 @@ class ChartEditor:
         w, h = surface.get_size()
         theme = settings.theme
         
-        # Background: dark grid for editor
-        surface.fill((20, 18, 25))
+        # Background: ArrowVortex style pure black
+        surface.fill((0, 0, 0))
         
         # 1. Draw lanes container
-        pygame.draw.rect(surface, (12, 10, 15), (self.start_x - self.lane_spacing, 0, self.total_width + self.lane_spacing * 2, h))
+        pygame.draw.rect(surface, (0, 0, 0), (self.start_x - self.lane_spacing, 0, self.total_width + self.lane_spacing * 2, h))
         for x in self.lane_x:
-            pygame.draw.line(surface, (28, 25, 35), (x, 0), (x, h), 1)
+            pygame.draw.line(surface, (45, 45, 45), (x, 0), (x, h), 1)
 
         # 1.5 Draw Audio Waveform Envelope inside the lanes background
         if self.wave_envelope:
@@ -869,25 +1231,25 @@ class ChartEditor:
                 # Check color based on note division (quarter, eighth, sixteenth)
                 beat_idx = s / (self.grid_snaps[self.snap_index] / 4.0)
                 if beat_idx % 1.0 == 0:
-                    # Quarter note beat (Red line)
-                    color = (150, 40, 40)
+                    # Quarter note beat (White line)
+                    color = (220, 220, 220)
                     thickness = 2
                 elif (beat_idx * 2) % 1.0 == 0:
                     # Eighth note beat (Blue line)
                     color = (40, 60, 150)
                     thickness = 1
                 else:
-                    # Sixteenth note beat (Yellow line)
-                    color = (120, 120, 40)
+                    # Sixteenth note beat (Yellow/Grey line)
+                    color = (80, 80, 80)
                     thickness = 1
                     
                 pygame.draw.line(surface, color, (self.start_x - self.lane_spacing, y), (self.start_x + self.total_width + self.lane_spacing, y), thickness)
                 
-                # Print beat numbers on the side of quarter notes
+                # Print beat numbers on the side of quarter notes (StepMania style: 0, 1, 2...)
                 if beat_idx % 1.0 == 0:
-                    font_small = pygame.font.SysFont("Trebuchet MS", 12)
-                    lbl = font_small.render(f"Beat {int(beat_idx) + 1}", True, (100, 100, 110))
-                    surface.blit(lbl, (self.start_x - 70, y - 6))
+                    font_small = pygame.font.SysFont("Segoe UI", 12, bold=True)
+                    lbl = font_small.render(str(int(beat_idx)), True, (210, 210, 210))
+                    surface.blit(lbl, (self.start_x - 30, y - 8))
 
         # 4. Draw Notes
         for note in self.chart:
@@ -898,8 +1260,9 @@ class ChartEditor:
                     note_x = self.lane_x[lane]
                     lane_colors = [(255, 0, 128), (0, 191, 255), (50, 205, 50), (255, 165, 0)]
                     
-                    # Draw hold note trail first
-                    if note.get("type") == "hold" and "endtime" in note:
+                    # Draw trails for holds and rolls first
+                    n_type = note.get("type", "single")
+                    if n_type == "hold" and "endtime" in note:
                         end_y = self.receptor_y - (note["endtime"] - self.editor_time) * self.scroll_speed
                         trail_h = int(y - end_y)
                         if trail_h > 0:
@@ -908,10 +1271,52 @@ class ChartEditor:
                             trail_surf.fill((trail_color[0], trail_color[1], trail_color[2], 130))
                             surface.blit(trail_surf, (note_x - 12, int(end_y)))
                             pygame.draw.rect(surface, trail_color, (note_x - 15, int(end_y) - 4, 30, 8), border_radius=2)
+                    elif n_type == "roll" and "endtime" in note:
+                        end_y = self.receptor_y - (note["endtime"] - self.editor_time) * self.scroll_speed
+                        trail_h = int(y - end_y)
+                        if trail_h > 0:
+                            trail_color = (180, 0, 220)
+                            trail_surf = pygame.Surface((24, trail_h), pygame.SRCALPHA)
+                            for sy in range(0, trail_h, 8):
+                                pygame.draw.rect(trail_surf, (trail_color[0], trail_color[1], trail_color[2], 160), (0, sy, 24, 4))
+                            surface.blit(trail_surf, (note_x - 12, int(end_y)))
+                            pygame.draw.rect(surface, trail_color, (note_x - 15, int(end_y) - 4, 30, 8), border_radius=2)
                             
-                    # Draw main tap note head block
-                    pygame.draw.rect(surface, lane_colors[lane], (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), border_radius=4)
-                    pygame.draw.rect(surface, (255, 255, 255), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), width=1, border_radius=4)
+                    # Draw main note head based on type
+                    if n_type == "mine":
+                        pygame.draw.circle(surface, (180, 20, 20), (note_x, int(y)), 12)
+                        pygame.draw.circle(surface, (40, 40, 40), (note_x, int(y)), 8)
+                        pygame.draw.circle(surface, (255, 255, 255), (note_x, int(y)), 12, width=1)
+                    elif n_type == "roll":
+                        pygame.draw.polygon(surface, (200, 0, 255), [
+                            (note_x, y - 12),
+                            (note_x - 22, y),
+                            (note_x, y + 12),
+                            (note_x + 22, y)
+                        ])
+                        pygame.draw.polygon(surface, (255, 255, 255), [
+                            (note_x, y - 12),
+                            (note_x - 22, y),
+                            (note_x, y + 12),
+                            (note_x + 22, y)
+                        ], width=1)
+                    elif n_type == "lift":
+                        pygame.draw.rect(surface, (0, 255, 204), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), border_radius=4)
+                        pygame.draw.rect(surface, (255, 255, 255), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), width=2, border_radius=4)
+                        pygame.draw.lines(surface, (255, 255, 255), False, [
+                            (note_x - 8, y + 4),
+                            (note_x, y - 4),
+                            (note_x + 8, y + 4)
+                        ], 2)
+                    elif n_type == "fake":
+                        pygame.draw.rect(surface, (100, 100, 110), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), border_radius=4)
+                        pygame.draw.rect(surface, (255, 255, 255), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), width=1, border_radius=4)
+                        fake_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
+                        fake_s = fake_font.render("FAKE", True, (240, 240, 240))
+                        surface.blit(fake_s, (note_x - fake_s.get_width()//2, y - fake_s.get_height()//2))
+                    else:
+                        pygame.draw.rect(surface, lane_colors[lane], (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), border_radius=4)
+                        pygame.draw.rect(surface, (255, 255, 255), (note_x - self.lane_width // 2 + 5, y - 10, self.lane_width - 10, 20), width=1, border_radius=4)
 
         # Draw Ghost Note Snapped Preview
         if not self.playing:
@@ -961,157 +1366,274 @@ class ChartEditor:
         pygame.draw.rect(surface, (0, 255, 204), (scrollbar_x, y_handle - 10, scrollbar_w, 20), border_radius=4)
         pygame.draw.rect(surface, (255, 255, 255), (scrollbar_x, y_handle - 10, scrollbar_w, 20), width=1, border_radius=4)
 
-        # 5. Draw Sidebar Panel (Controls, Stats)
-        sidebar_x = 520
-        pygame.draw.rect(surface, (30, 28, 35), (sidebar_x - 20, 0, SCREEN_WIDTH - sidebar_x + 20, h))
-        
+        # 5. Draw Sidebar Panels (Controls, Stats)
         # Load fonts
-        title_font = pygame.font.SysFont("Impact", 36)
-        label_font = pygame.font.SysFont("Segoe UI", 18, bold=True)
-        lbl_val_font = pygame.font.SysFont("Segoe UI", 18)
+        label_font = pygame.font.SysFont("Impact" if theme == "DDR-Retro" else "Segoe UI", 18, bold=True)
+        lbl_val_font = pygame.font.SysFont("Segoe UI", 16)
         help_font = pygame.font.SysFont("Segoe UI", 14)
         
-        # Title
-        title_surf = title_font.render("CHART EDITOR", True, (0, 255, 204))
-        surface.blit(title_surf, (sidebar_x, 40))
-        
-        # Selection string formatting
-        if self.selection_start is not None and self.selection_end is not None:
-            sel_str = f"{min(self.selection_start, self.selection_end):.1f}s - {max(self.selection_start, self.selection_end):.1f}s"
-        elif self.selection_start is not None:
-            sel_str = f"{self.selection_start:.1f}s - [Set End]"
-        else:
-            sel_str = "None"
+        # Helper to draw procedural heart decals
+        def draw_heart(surf, hx, hy, size=12, color=(255, 45, 45)):
+            pygame.draw.circle(surf, color, (hx - size // 4, hy - size // 4), size // 4)
+            pygame.draw.circle(surf, color, (hx + size // 4, hy - size // 4), size // 4)
+            pygame.draw.polygon(surf, color, [
+                (hx - size // 2, hy - size // 8),
+                (hx + size // 2, hy - size // 8),
+                (hx, hy + size // 2)
+            ])
             
-        clip_str = f"{len(self.clipboard)} notes" if self.clipboard else "Empty"
+        # Draw ArrowVortex Heart Decals around receptors at self.receptor_y
+        # Left Decal
+        dec_ly = self.receptor_y
+        dec_lx = self.start_x - 55
+        draw_heart(surface, dec_lx, dec_ly)
+        lbl_l1 = help_font.render("1", True, (0, 191, 255))
+        lbl_l2 = help_font.render("132", True, (255, 255, 255))
+        lbl_l3 = help_font.render("4", True, (255, 215, 0))
+        surface.blit(lbl_l1, (dec_lx - 22, dec_ly - 8))
+        surface.blit(lbl_l2, (dec_lx - lbl_l2.get_width()//2, dec_ly - 22))
+        surface.blit(lbl_l3, (dec_lx - lbl_l3.get_width()//2, dec_ly + 8))
+        
+        # Right Decal
+        dec_rx = self.start_x + self.total_width + 15
+        draw_heart(surface, dec_rx, dec_ly)
+        lbl_r1 = help_font.render("1", True, (0, 191, 255))
+        lbl_r2 = help_font.render("8", True, (255, 255, 255))
+        lbl_r3 = help_font.render("4", True, (255, 215, 0))
+        lbl_r4 = help_font.render("1/1", True, (0, 230, 100))
+        lbl_r5 = help_font.render("Song Start", True, (240, 50, 50))
+        surface.blit(lbl_r1, (dec_rx - 16, dec_ly - 8))
+        surface.blit(lbl_r2, (dec_rx - lbl_r2.get_width()//2, dec_ly - 22))
+        surface.blit(lbl_r3, (dec_rx - lbl_r3.get_width()//2, dec_ly + 8))
+        surface.blit(lbl_r4, (dec_rx + 12, dec_ly - 8))
+        surface.blit(lbl_r5, (dec_rx + 36, dec_ly - 8))
 
-        # Info Card (7 rows)
-        info_rows = [
-            ("Song Title:", self.metadata["title"]),
-            ("Difficulty:", self.difficulty.upper()),
-            ("Tempo BPM:", f"{self.bpm:.2f}"),
-            ("Song Time:", f"{self.editor_time:.2f}s / {self.song_duration:.2f}s"),
-            ("Notes Count:", str(len(self.chart))),
-            ("Selection:", sel_str),
-            ("Clipboard:", clip_str)
+        # --- LEFT COLUMN: SHORTCUTS GUIDE ---
+        col1_x = 25
+        yellow_col = (255, 220, 0)
+        grey_col = (175, 175, 180)
+        white_col = (240, 240, 245)
+        
+        y_cursor = 40
+        sections = [
+            ("NAVIGATING", [
+                ("Up/Down Key:", "Move One Beat"),
+                ("Left/Right Key:", "Change Grid Snap"),
+                ("PageUp/PageDown:", "Fast Timeline Scroll"),
+                ("Home / End:", "Start / End of Song")
+            ]),
+            ("WRITING NOTES", [
+                ("Click on Lanes:", "Place/Remove standard note"),
+                ("H + Mouse Hover:", "Toggle Hold Note state"),
+                ("O + Mouse Hover:", "Toggle Roll Note state"),
+                ("M / L / F Keys:", "Toggle Mine / Lift / Fake state")
+            ]),
+            ("AVAILABLE MENUS", [
+                ("ESC Key:", "Exit Editor / Selection Menu"),
+                ("Click BPM/Diff:", "Prompt to Edit BPM/Difficulty"),
+                ("Spacebar:", "Toggle Play / Pause")
+            ]),
+            ("RECORD MODE", [
+                ("R Key:", "Toggle Live Recording Mode"),
+                ("D, F, J, K keys:", "Tap Live Steps in lanes")
+            ]),
+            ("KEYMAPPINGS", [
+                ("F11 Key:", "Toggle Fullscreen Window")
+            ])
         ]
         
-        for idx, (label, val) in enumerate(info_rows):
-            y_pos = 95 + idx * 26
-            lbl_s = label_font.render(label, True, (200, 200, 210))
-            val_s = lbl_val_font.render(val, True, (255, 255, 255))
-            surface.blit(lbl_s, (sidebar_x, y_pos))
-            # Shift value right, but make sure it doesn't wrap or clip
-            val_x = sidebar_x + 130 if label in ["Song Title:", "Song Time:"] else sidebar_x + 140
-            surface.blit(val_s, (val_x, y_pos))
+        for section_title, rows in sections:
+            hdr_s = label_font.render(section_title, True, yellow_col)
+            surface.blit(hdr_s, (col1_x, y_cursor))
+            pygame.draw.line(surface, (60, 60, 65), (col1_x, y_cursor + 24), (col1_x + 290, y_cursor + 24), 1)
+            y_cursor += 30
             
-        # Grid Snap selector (drawn at Y=280)
-        snap_lbl = label_font.render("Grid Snap:", True, (200, 200, 210))
+            for shortcut, desc in rows:
+                sc_s = help_font.render(shortcut, True, white_col)
+                desc_s = help_font.render(desc, True, grey_col)
+                surface.blit(sc_s, (col1_x, y_cursor))
+                surface.blit(desc_s, (col1_x + 12, y_cursor + 16))
+                y_cursor += 34
+            y_cursor += 15
+
+        # --- RIGHT COLUMN: INFO, STATS & METADATA EDITORS ---
+        col2_x = SCREEN_WIDTH - 280
+        mx, my = pygame.mouse.get_pos()
+        
+        # 1. EDIT SONG METADATA
+        y_sec1 = 40
+        hdr_meta = label_font.render("EDIT SONG METADATA", True, yellow_col)
+        surface.blit(hdr_meta, (col2_x, y_sec1))
+        pygame.draw.line(surface, (60, 60, 65), (col2_x, y_sec1 + 22), (col2_x + 250, y_sec1 + 22), 1)
+        
+        # Blinking cursor index
+        cursor_show = (pygame.time.get_ticks() // 500) % 2
+        cursor_char = "|" if cursor_show else ""
+        
+        # Song Title Box
+        title_rect = pygame.Rect(col2_x, y_sec1 + 30, 250, 32)
+        title_hover = title_rect.collidepoint(mx, my)
+        title_active = (getattr(self, "active_textbox", None) == "title")
+        pygame.draw.rect(surface, (30, 25, 45) if title_active else (15, 12, 22), title_rect, border_radius=4)
+        border_col = (0, 255, 204) if title_active else ((255, 255, 0) if title_hover else (60, 55, 75))
+        pygame.draw.rect(surface, border_col, title_rect, width=2 if title_active else 1, border_radius=4)
+        t_text = "TITLE: " + (self.textbox_buffer + cursor_char if title_active else self.metadata.get("title", ""))
+        t_lbl = help_font.render(t_text, True, (0, 255, 204) if title_active else white_col)
+        surface.blit(t_lbl, (title_rect.x + 8, title_rect.y + 7))
+        
+        # BPM Box
+        bpm_rect = pygame.Rect(col2_x, y_sec1 + 70, 250, 32)
+        bpm_hover = bpm_rect.collidepoint(mx, my)
+        bpm_active = (getattr(self, "active_textbox", None) == "bpm")
+        pygame.draw.rect(surface, (30, 25, 45) if bpm_active else (15, 12, 22), bpm_rect, border_radius=4)
+        border_col = (0, 255, 204) if bpm_active else ((255, 255, 0) if bpm_hover else (60, 55, 75))
+        pygame.draw.rect(surface, border_col, bpm_rect, width=2 if bpm_active else 1, border_radius=4)
+        b_text = "BPM: " + (self.textbox_buffer + cursor_char if bpm_active else f"{self.bpm:.2f}")
+        b_lbl = help_font.render(b_text, True, (0, 255, 204) if bpm_active else white_col)
+        surface.blit(b_lbl, (bpm_rect.x + 8, bpm_rect.y + 7))
+        
+        # Difficulty Box
+        diff_rect = pygame.Rect(col2_x, y_sec1 + 110, 250, 32)
+        diff_hover = diff_rect.collidepoint(mx, my)
+        diff_active = (getattr(self, "active_textbox", None) == "difficulty")
+        pygame.draw.rect(surface, (30, 25, 45) if diff_active else (15, 12, 22), diff_rect, border_radius=4)
+        border_col = (0, 255, 204) if diff_active else ((255, 255, 0) if diff_hover else (60, 55, 75))
+        pygame.draw.rect(surface, border_col, diff_rect, width=2 if diff_active else 1, border_radius=4)
+        d_text = "DIFF: " + (self.textbox_buffer + cursor_char if diff_active else self.difficulty.upper())
+        d_lbl = help_font.render(d_text, True, (0, 255, 204) if diff_active else white_col)
+        surface.blit(d_lbl, (diff_rect.x + 8, diff_rect.y + 7))
+        
+        # Save As Song Copy Button
+        saveas_rect = pygame.Rect(col2_x, y_sec1 + 150, 250, 32)
+        saveas_hover = saveas_rect.collidepoint(mx, my)
+        pygame.draw.rect(surface, (60, 20, 80) if saveas_hover else (45, 15, 60), saveas_rect, border_radius=4)
+        pygame.draw.rect(surface, (255, 0, 180) if saveas_hover else (140, 30, 120), saveas_rect, width=1, border_radius=4)
+        sa_lbl = help_font.render("SAVE AS NEW SONG...", True, (255, 255, 255))
+        surface.blit(sa_lbl, (saveas_rect.centerx - sa_lbl.get_width()//2, saveas_rect.centery - sa_lbl.get_height()//2))
+        
+        # 2. PLAYBACK INFO
+        y_sec2 = 230
+        hdr_play = label_font.render("PLAYBACK INFO", True, yellow_col)
+        surface.blit(hdr_play, (col2_x, y_sec2))
+        pygame.draw.line(surface, (60, 60, 65), (col2_x, y_sec2 + 22), (col2_x + 250, y_sec2 + 22), 1)
+        
+        curr_beat = self.editor_time * (self.bpm / 60.0)
         snap_val = self.grid_snaps[self.snap_index]
-        snap_str = "Free" if snap_val == "Free" else f"1/{snap_val} Note"
-        snap_val_lbl = lbl_val_font.render(snap_str, True, (0, 255, 204))
-        surface.blit(snap_lbl, (sidebar_x, 280))
-        pygame.draw.rect(surface, (45, 40, 55), (sidebar_x + 140, 275, 120, 30), border_radius=4)
-        surface.blit(snap_val_lbl, (sidebar_x + 150, 280))
+        snap_str = "Free" if snap_val == "Free" else f"1/{snap_val} notes"
         
-        # Controls / Action Buttons (drawn at Y=330)
-        btn_y = 330
-        btn_color = (40, 100, 60) if self.playing else (50, 45, 65)
-        pygame.draw.rect(surface, btn_color, (sidebar_x, btn_y, 140, 40), border_radius=5)
-        play_lbl = label_font.render("STOP" if self.playing else "PLAY (SPACE)", True, (255, 255, 255))
-        surface.blit(play_lbl, (sidebar_x + 15, btn_y + 10))
-        
-        # Save / Save New buttons
-        pygame.draw.rect(surface, (100, 40, 40) if self.unsaved_changes else (50, 45, 65), (sidebar_x + 160, btn_y, 65, 40), border_radius=5)
-        save_lbl = help_font.render("SAVE", True, (255, 255, 255))
-        surface.blit(save_lbl, (sidebar_x + 160 + (65 - save_lbl.get_width()) // 2, btn_y + 12))
-        
-        pygame.draw.rect(surface, (45, 40, 70), (sidebar_x + 235, btn_y, 65, 40), border_radius=5)
-        new_lbl = help_font.render("+NEW", True, (255, 255, 255))
-        surface.blit(new_lbl, (sidebar_x + 235 + (65 - new_lbl.get_width()) // 2, btn_y + 12))
-        
-        # UNDO and REDO buttons (drawn at Y=385)
-        undo_color = (60, 50, 80) if self.undo_stack else (40, 40, 45)
-        pygame.draw.rect(surface, undo_color, (sidebar_x, 385, 140, 35), border_radius=4)
-        undo_lbl = label_font.render("UNDO (Z)", True, (255, 255, 255) if self.undo_stack else (120, 120, 125))
-        surface.blit(undo_lbl, (sidebar_x + 35, 390))
-
-        redo_color = (60, 50, 80) if self.redo_stack else (40, 40, 45)
-        pygame.draw.rect(surface, redo_color, (sidebar_x + 160, 385, 140, 35), border_radius=4)
-        redo_lbl = label_font.render("REDO (Y)", True, (255, 255, 255) if self.redo_stack else (120, 120, 125))
-        surface.blit(redo_lbl, (sidebar_x + 195, 390))
-
-        # Clear Chart Button (drawn at Y=435)
-        pygame.draw.rect(surface, (120, 25, 25), (sidebar_x, 435, 300, 35), border_radius=5)
-        clear_lbl = label_font.render("CLEAR ALL STEPS IN CHART", True, (255, 255, 255))
-        surface.blit(clear_lbl, (sidebar_x + 40, 440))
-        
-        # Record button (drawn at Y=485)
-        if self.recording:
-            flash = (pygame.time.get_ticks() // 250) % 2 == 0
-            rec_color = (255, 45, 45) if flash else (180, 20, 20)
-            rec_text = "🔴 RECORDING LIVE..."
-        else:
-            rec_color = (130, 30, 30)
-            rec_text = "🔴 LIVE RECORD (R)"
-            
-        pygame.draw.rect(surface, rec_color, (sidebar_x, 485, 300, 35), border_radius=5)
-        rec_lbl = label_font.render(rec_text, True, (255, 255, 255))
-        surface.blit(rec_lbl, (sidebar_x + 65, 490))
-        
-        # Playback Speed selector (drawn at Y=535)
-        speed_y = 535
-        speed_lbl = help_font.render("PLAYBACK SPEED:", True, (200, 200, 210))
-        surface.blit(speed_lbl, (sidebar_x, speed_y + 8))
-        
-        speeds = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
-        for s_idx, sp in enumerate(speeds):
-            sp_rect = pygame.Rect(sidebar_x + 130 + s_idx * 28, speed_y + 4, 25, 22)
-            is_active = (self.playback_speed == sp)
-            bg_col = (0, 255, 204) if is_active else (45, 40, 55)
-            txt_col = (10, 10, 15) if is_active else (220, 220, 230)
-            pygame.draw.rect(surface, bg_col, sp_rect, border_radius=3)
-            sp_lbl = help_font.render(f"{sp}", True, txt_col)
-            surface.blit(sp_lbl, (sp_rect.centerx - sp_lbl.get_width()//2, sp_rect.centery - sp_lbl.get_height()//2))
-            
-        # Instructions list (drawn at Y=575)
-        y_help = 575
-        pygame.draw.line(surface, (60, 55, 75), (sidebar_x, y_help), (SCREEN_WIDTH - 40, y_help), 1)
-        
-        help_title = label_font.render("SHORTCUT GUIDE:", True, (200, 200, 210))
-        surface.blit(help_title, (sidebar_x, y_help + 8))
-        
-        shortcuts = [
-            ("SPACE", "Play / Pause timeline"),
-            ("R", "Record Mode Play/Pause"),
-            ("UP / DOWN", "Step forward / backward"),
-            ("LEFT/RIGHT", "Cycle grid snap interval"),
-            ("D,F,J,K", "Add note (Lanes 1,2,3,4)"),
-            ("H", "Hover + H: Toggle Hold Note"),
-            ("Ctrl+Z / Y", "Undo / Redo change"),
-            ("[  /  ]", "Set selection start / end"),
-            ("Ctrl+C / V / X", "Copy / Paste / Cut selection"),
-            ("ESC", "Exit editor / Clear selection")
+        info_stats = [
+            ("Current beat:", f"{max(0.0, curr_beat):.3f}"),
+            ("Current second:", f"{max(0.0, self.editor_time):.6f}"),
+            ("Snap grid:", snap_str),
         ]
         
-        for idx, (shortcut, desc) in enumerate(shortcuts):
-            sc_pos_y = y_help + 30 + idx * 16
-            sc_s = help_font.render(shortcut, True, (0, 255, 204))
-            desc_s = help_font.render(desc, True, (240, 240, 240))
+        y_curs = y_sec2 + 30
+        for label, val in info_stats:
+            lbl_s = help_font.render(label, True, grey_col)
+            val_col = yellow_col if label in ["Current second:"] else white_col
+            val_s = help_font.render(val, True, val_col)
+            surface.blit(lbl_s, (col2_x, y_curs))
+            surface.blit(val_s, (col2_x + 110, y_curs))
+            y_curs += 20
             
-            surface.blit(sc_s, (sidebar_x, sc_pos_y))
-            surface.blit(desc_s, (sidebar_x + 105, sc_pos_y))
-
+        # 3. STEP COUNTERS
+        y_sec3 = 330
+        hdr_stats = label_font.render("STEP COUNTERS", True, yellow_col)
+        surface.blit(hdr_stats, (col2_x, y_sec3))
+        pygame.draw.line(surface, (60, 60, 65), (col2_x, y_sec3 + 22), (col2_x + 250, y_sec3 + 22), 1)
+        
+        stats = self.get_chart_stats()
+        stat_rows = [
+            ("Tap Steps:", stats["taps"]),
+            ("Jumps:", stats["jumps"]),
+            ("Hands:", stats["hands"]),
+            ("Holds:", stats["holds"]),
+            ("Mines:", stats["mines"]),
+            ("Rolls:", stats["rolls"]),
+            ("Lifts:", stats["lifts"]),
+            ("Fakes:", stats["fakes"]),
+        ]
+        
+        y_curs = y_sec3 + 30
+        for label, val in stat_rows:
+            lbl_s = help_font.render(label, True, grey_col)
+            val_s = help_font.render(str(val), True, white_col)
+            surface.blit(lbl_s, (col2_x, y_curs))
+            surface.blit(val_s, (col2_x + 110, y_curs))
+            y_curs += 18
+            
+        # 4. EDITOR ACTIONS
+        y_sec4 = 530
+        hdr_act = label_font.render("EDITOR ACTIONS", True, yellow_col)
+        surface.blit(hdr_act, (col2_x, y_sec4))
+        pygame.draw.line(surface, (60, 60, 65), (col2_x, y_sec4 + 22), (col2_x + 250, y_sec4 + 22), 1)
+        
+        # PLAY / PAUSE button
+        btn_play = pygame.Rect(col2_x, y_sec4 + 30, 120, 30)
+        play_hover = btn_play.collidepoint(mx, my)
+        pygame.draw.rect(surface, (30, 60, 45) if play_hover else (20, 40, 30), btn_play, border_radius=4)
+        pygame.draw.rect(surface, (0, 255, 120) if play_hover else (0, 180, 80), btn_play, width=1, border_radius=4)
+        play_txt = "PAUSE" if self.playing else "PLAY"
+        play_s = help_font.render(play_txt, True, (255, 255, 255))
+        surface.blit(play_s, (btn_play.centerx - play_s.get_width()//2, btn_play.centery - play_s.get_height()//2))
+        
+        # SAVE CHART button
+        btn_save = pygame.Rect(col2_x + 130, y_sec4 + 30, 120, 30)
+        save_hover = btn_save.collidepoint(mx, my)
+        pygame.draw.rect(surface, (30, 50, 70) if save_hover else (20, 35, 50), btn_save, border_radius=4)
+        pygame.draw.rect(surface, (0, 150, 255) if save_hover else (0, 100, 180), btn_save, width=1, border_radius=4)
+        save_s = help_font.render("SAVE", True, (255, 255, 255))
+        surface.blit(save_s, (btn_save.centerx - save_s.get_width()//2, btn_save.centery - save_s.get_height()//2))
+        
+        # UNDO button
+        btn_undo = pygame.Rect(col2_x, y_sec4 + 70, 120, 30)
+        undo_hover = btn_undo.collidepoint(mx, my)
+        pygame.draw.rect(surface, (50, 50, 55) if undo_hover else (35, 35, 40), btn_undo, border_radius=4)
+        pygame.draw.rect(surface, (180, 180, 190) if undo_hover else (100, 100, 110), btn_undo, width=1, border_radius=4)
+        undo_s = help_font.render("UNDO", True, (255, 255, 255))
+        surface.blit(undo_s, (btn_undo.centerx - undo_s.get_width()//2, btn_undo.centery - undo_s.get_height()//2))
+        
+        # REDO button
+        btn_redo = pygame.Rect(col2_x + 130, y_sec4 + 70, 120, 30)
+        redo_hover = btn_redo.collidepoint(mx, my)
+        pygame.draw.rect(surface, (50, 50, 55) if redo_hover else (35, 35, 40), btn_redo, border_radius=4)
+        pygame.draw.rect(surface, (180, 180, 190) if redo_hover else (100, 100, 110), btn_redo, width=1, border_radius=4)
+        redo_s = help_font.render("REDO", True, (255, 255, 255))
+        surface.blit(redo_s, (btn_redo.centerx - redo_s.get_width()//2, btn_redo.centery - redo_s.get_height()//2))
+        
+        # CLEAR ALL button
+        btn_clear = pygame.Rect(col2_x, y_sec4 + 110, 250, 30)
+        clear_hover = btn_clear.collidepoint(mx, my)
+        pygame.draw.rect(surface, (100, 30, 30) if clear_hover else (70, 20, 20), btn_clear, border_radius=4)
+        pygame.draw.rect(surface, (255, 60, 60) if clear_hover else (180, 40, 40), btn_clear, width=1, border_radius=4)
+        clear_s = help_font.render("CLEAR ALL NOTES", True, (255, 255, 255))
+        surface.blit(clear_s, (btn_clear.centerx - clear_s.get_width()//2, btn_clear.centery - clear_s.get_height()//2))
+        
+        # GENERATE FILLER BEATS button
+        btn_filler = pygame.Rect(col2_x, y_sec4 + 150, 250, 30)
+        filler_hover = btn_filler.collidepoint(mx, my)
+        pygame.draw.rect(surface, (0, 80, 100) if filler_hover else (0, 50, 70), btn_filler, border_radius=4)
+        pygame.draw.rect(surface, (0, 200, 255) if filler_hover else (0, 140, 180), btn_filler, width=1, border_radius=4)
+        filler_s = help_font.render("GENERATE FILLER BEATS", True, (255, 255, 255))
+        surface.blit(filler_s, (btn_filler.centerx - filler_s.get_width()//2, btn_filler.centery - filler_s.get_height()//2))
+        
+        # EXPORT TO SM button
+        btn_export = pygame.Rect(col2_x, y_sec4 + 190, 250, 30)
+        export_hover = btn_export.collidepoint(mx, my)
+        pygame.draw.rect(surface, (80, 60, 0) if export_hover else (50, 40, 0), btn_export, border_radius=4)
+        pygame.draw.rect(surface, (255, 200, 0) if export_hover else (180, 140, 0), btn_export, width=1, border_radius=4)
+        export_s = help_font.render("EXPORT TO STEPMANIA (.SM)", True, (255, 255, 255))
+        surface.blit(export_s, (btn_export.centerx - export_s.get_width()//2, btn_export.centery - export_s.get_height()//2))
+            
         # Save success notifications
         if self.save_notification_timer > 0:
-            pygame.draw.rect(surface, (40, 120, 60), (sidebar_x, h - 80, 300, 40), border_radius=5)
+            pygame.draw.rect(surface, (40, 120, 60), (col2_x, h - 80, 250, 40), border_radius=5)
             notif_lbl = label_font.render("SAVED SUCCESSFULLY!", True, (255, 255, 255))
-            surface.blit(notif_lbl, (sidebar_x + 60, h - 70))
-            
+            surface.blit(notif_lbl, (col2_x + 20, h - 70))
         elif self.unsaved_changes:
-            pygame.draw.rect(surface, (120, 60, 20), (sidebar_x, h - 80, 300, 40), border_radius=5)
+            pygame.draw.rect(surface, (120, 60, 20), (col2_x, h - 80, 250, 40), border_radius=5)
             notif_lbl = label_font.render("UNSAVED CHANGES...", True, (255, 255, 255))
-            surface.blit(notif_lbl, (sidebar_x + 60, h - 70))
+            surface.blit(notif_lbl, (col2_x + 30, h - 70))
 
         # 6. Draw glowing screen status banner when recording is live
         if self.recording:
