@@ -5,18 +5,46 @@ import sys
 # Paths
 if getattr(sys, 'frozen', False):
     # Packaged in executable (PyInstaller)
-    BASE_DIR = os.path.dirname(sys.executable)
+    if sys.platform == "darwin":
+        # On macOS, sys.executable is inside Zoomies.app/Contents/MacOS/
+        # App bundles inside /Applications/ are read-only for standard users.
+        # Use ~/Library/Application Support/Zoomies/ for user-writable data.
+        user_data_dir = os.path.expanduser("~/Library/Application Support/Zoomies")
+        os.makedirs(user_data_dir, exist_ok=True)
+        BASE_DIR = user_data_dir
+        
+        # Bundle resources directory (where bundled songs/characters/themes reside)
+        app_bundle_dir = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        BUNDLE_RES_DIR = os.path.join(app_bundle_dir, "Resources")
+        if not os.path.exists(BUNDLE_RES_DIR):
+            BUNDLE_RES_DIR = os.path.dirname(sys.executable)
+    else:
+        BASE_DIR = os.path.dirname(sys.executable)
+        BUNDLE_RES_DIR = BASE_DIR
 else:
     # Normal Python run
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_RES_DIR = BASE_DIR
 
 SONGS_DIR = os.path.join(BASE_DIR, "songs")
 CHARACTERS_DIR = os.path.join(BASE_DIR, "characters")
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 
-# Ensure directories exist
+# Ensure directories exist in user writable space
 os.makedirs(SONGS_DIR, exist_ok=True)
 os.makedirs(CHARACTERS_DIR, exist_ok=True)
+
+# Copy default bundled assets on macOS if not already present in user_data_dir
+if BUNDLE_RES_DIR != BASE_DIR:
+    import shutil
+    for folder in ["songs", "characters", "themes"]:
+        src_folder = os.path.join(BUNDLE_RES_DIR, folder)
+        dst_folder = os.path.join(BASE_DIR, folder)
+        if os.path.exists(src_folder) and not os.path.exists(dst_folder):
+            try:
+                shutil.copytree(src_folder, dst_folder)
+            except Exception as e:
+                print(f"Notice: Could not copy initial {folder} bundle: {e}")
 
 # Screen Settings
 SCREEN_WIDTH = 1024

@@ -11,8 +11,7 @@ import wave
 import struct
 import math
 import random
-import tkinter as tk
-from tkinter import filedialog
+import subprocess
 
 # Import game modules
 import zipfile
@@ -1860,7 +1859,43 @@ class App:
         self.analysis_thread.start()
 
     def open_file_picker_dialog(self):
+        # 1. Native macOS file picker via AppleScript (avoids Tkinter crashes / thread deadlocks on macOS)
+        if sys.platform == "darwin":
+            try:
+                ascript = (
+                    'tell application "System Events"\n'
+                    '    activate\n'
+                    '    set chosenFiles to choose file with prompt "Select Song or Stepmania Zips (MP3/WAV/ZIP)" '
+                    'of type {"mp3", "wav", "ogg", "zip"} with multiple selections allowed without invisibles\n'
+                    '    set outPaths to {}\n'
+                    '    repeat with aFile in chosenFiles\n'
+                    '        set end of outPaths to POSIX path of aFile\n'
+                    '    end repeat\n'
+                    '    set AppleScript\'s text item delimiters to ASCII character 10\n'
+                    '    return outPaths as text\n'
+                    'end tell'
+                )
+                res = subprocess.run(
+                    ["osascript", "-e", ascript],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    paths = [p.strip() for p in res.stdout.strip().split("\n") if p.strip()]
+                    return paths
+                return None
+            except subprocess.TimeoutExpired:
+                print("Native macOS file picker timed out.")
+                return None
+            except Exception as err:
+                print(f"Error running native macOS file dialog: {err}")
+                # Fall through to Tkinter fallback if AppleScript fails
+
+        # 2. Windows / Linux file picker via Tkinter
         try:
+            import tkinter as tk
+            from tkinter import filedialog
             root = tk.Tk()
             root.withdraw()
             root.attributes("-topmost", True)

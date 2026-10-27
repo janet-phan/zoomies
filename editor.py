@@ -313,29 +313,70 @@ class ChartEditor:
 
     def confirm_and_save(self):
         """Asks whether to overwrite the current difficulty or rename it to save as a new custom chart."""
-        import tkinter as tk
-        from tkinter import messagebox, simpledialog
-        
-        root = tk.Tk()
-        root.withdraw()
-        
-        title = "Overwrite Chart?"
-        msg = f"You are about to overwrite the existing '{self.difficulty}' chart for this song.\n\nDo you want to overwrite it?\n(Select 'No' to rename and save as a custom difficulty instead)"
-        
-        resp = messagebox.askyesnocancel(title, msg, default=messagebox.YES)
-        if resp is True:
-            self.save_chart()
-        elif resp is False:
-            new_diff = simpledialog.askstring("Rename Difficulty", "Enter new custom difficulty name:", initialvalue=self.difficulty + " Custom")
-            if new_diff:
-                new_diff = new_diff.strip()
-                if new_diff:
-                    charts = self.metadata.get("charts", {})
-                    charts[new_diff] = self.chart
-                    self.difficulty = new_diff
+        import sys
+        import subprocess
+
+        if sys.platform == "darwin":
+            try:
+                ascript = (
+                    'tell application "System Events"\n'
+                    '    activate\n'
+                    f'    set theDialog to display alert "Overwrite Chart?" message "You are about to overwrite the existing \'{self.difficulty}\' chart for this song.\\n\\nDo you want to overwrite it?" as critical buttons {{"Cancel", "Rename", "Overwrite"}} default button "Overwrite" cancel button "Cancel"\n'
+                    '    return button returned of theDialog\n'
+                    'end tell'
+                )
+                res = subprocess.run(["osascript", "-e", ascript], capture_output=True, text=True)
+                choice = res.stdout.strip()
+                if choice == "Overwrite":
                     self.save_chart()
-                    self.save_notification_timer = 3.0
-                    print(f"Chart saved as new custom difficulty: {new_diff}")
+                elif choice == "Rename":
+                    rename_script = (
+                        'tell application "System Events"\n'
+                        '    activate\n'
+                        f'    set theResp to display dialog "Enter new custom difficulty name:" default answer "{self.difficulty} Custom" with title "Rename Difficulty"\n'
+                        '    return text returned of theResp\n'
+                        'end tell'
+                    )
+                    r_res = subprocess.run(["osascript", "-e", rename_script], capture_output=True, text=True)
+                    new_diff = r_res.stdout.strip()
+                    if new_diff:
+                        charts = self.metadata.get("charts", {})
+                        charts[new_diff] = self.chart
+                        self.difficulty = new_diff
+                        self.save_chart()
+                        self.save_notification_timer = 3.0
+                return
+            except Exception as e:
+                print(f"macOS dialog error, falling back to Tkinter: {e}")
+
+        try:
+            import tkinter as tk
+            from tkinter import messagebox, simpledialog
+            
+            root = tk.Tk()
+            root.withdraw()
+            
+            title = "Overwrite Chart?"
+            msg = f"You are about to overwrite the existing '{self.difficulty}' chart for this song.\n\nDo you want to overwrite it?\n(Select 'No' to rename and save as a custom difficulty instead)"
+            
+            resp = messagebox.askyesnocancel(title, msg, default=messagebox.YES)
+            if resp is True:
+                self.save_chart()
+            elif resp is False:
+                new_diff = simpledialog.askstring("Rename Difficulty", "Enter new custom difficulty name:", initialvalue=self.difficulty + " Custom")
+                if new_diff:
+                    new_diff = new_diff.strip()
+                    if new_diff:
+                        charts = self.metadata.get("charts", {})
+                        charts[new_diff] = self.chart
+                        self.difficulty = new_diff
+                        self.save_chart()
+                        self.save_notification_timer = 3.0
+                        print(f"Chart saved as new custom difficulty: {new_diff}")
+            root.destroy()
+        except Exception as e:
+            print(f"Error showing confirmation dialog: {e}")
+            self.save_chart()
 
     def save_new_version(self):
         """Duplicates current chart under a new sequential Custom difficulty index."""
@@ -357,14 +398,41 @@ class ChartEditor:
 
     def save_as(self):
         """Saves a copy of the current song and all its charts under a new title and filename."""
-        import tkinter as tk
-        from tkinter import simpledialog
+        import sys
+        import subprocess
         import shutil
-        
-        root = tk.Tk()
-        root.withdraw()
-        
-        new_title = simpledialog.askstring("Save As New Song", "Enter new Song Title:", initialvalue=self.metadata.get("title", "") + " (Copy)")
+
+        new_title = None
+        default_val = self.metadata.get("title", "") + " (Copy)"
+
+        if sys.platform == "darwin":
+            try:
+                ascript = (
+                    'tell application "System Events"\n'
+                    '    activate\n'
+                    f'    set theResp to display dialog "Enter new Song Title:" default answer "{default_val}" with title "Save As New Song"\n'
+                    '    return text returned of theResp\n'
+                    'end tell'
+                )
+                res = subprocess.run(["osascript", "-e", ascript], capture_output=True, text=True)
+                new_title = res.stdout.strip()
+            except Exception as e:
+                print(f"macOS dialog error: {e}")
+
+        if not new_title:
+            try:
+                import tkinter as tk
+                from tkinter import simpledialog
+                
+                root = tk.Tk()
+                root.withdraw()
+                
+                new_title = simpledialog.askstring("Save As New Song", "Enter new Song Title:", initialvalue=default_val)
+                root.destroy()
+            except Exception as e:
+                print(f"Error opening save as dialog: {e}")
+                return
+
         if not new_title:
             return
             
